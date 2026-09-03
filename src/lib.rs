@@ -1,10 +1,20 @@
 //! # qtool — Quantum Process Tomography (QPT) toolkit
 //!
-//! 纯 Rust（`faer` 矩阵计算 + `plotly` 绘图）实现的任意 $n$ 比特完全正保迹
-//! (CPTP) 极大似然量子过程层析 (QPT-MLE)：基于 FISTA 加速投影梯度法输出
-//! Pauli 转移矩阵 (PTM)。
+//! Pure-Rust (`faer` for linear algebra, `plotly` for plotting) quantum process
+//! tomography (QPT) for an arbitrary number of qubits under the completely positive
+//! and trace-preserving (CPTP) constraint: maximum-likelihood estimation (QPT-MLE)
+//! solved with an accelerated projected-gradient method (FISTA) that produces a
+//! Pauli transfer matrix (PTM).
 //!
-//! 关键类型定义在 [`qpt`] 模块内，外部直接通过
-//! `use qtool::qpt::*;` 或 `use qtool::qpt::{QptDataset, QptSolver, ...};` 引用。
+//! All public types live in the [`qpt`] module. Import them with
+//! `use qtool::qpt::*;` or `use qtool::qpt::{QptDataset, QptSolver, ...};`.
+//!
+//! # Crate layout
+//!
+//! - [`qpt::QptDataset`] — collect experimental data points.
+//! - [`qpt::QptSolver`] — run the FISTA reconstruction.
+//! - [`qpt::QptResult`], [`qpt::PtmMatrix`] — the reconstructed PTM plus diagnostics.
+//! - [`qpt::QuantumState`], [`qpt::PauliString`], [`qpt::Pauli`], [`qpt::SingleQubitState`] —
+//!   states and operators.
 
 pub mod qpt;

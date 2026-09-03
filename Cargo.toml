@@ -2,9 +2,20 @@
 name = "qtool"
 version = "0.1.0"
 edition = "2024"
+authors = ["xncz <xncz@outlook.com>"]
+description = "A simple analysis toolbox for quantum computation."
+license = "MIT"
+repository = "https://github.com/xncz/qtool"
+readme = "README.md"
+keywords = ["quantum", "tomography", "qpt", "pauli", "fista"]
+categories = ["mathematics", "science", "algorithms"]
 
 [lib]
 
 [dependencies]
 faer = "0.24.4"
 plotly = "0.14.1"
+rayon = "1.12.0"
+
+[dev-dependencies]
+rand = "0.10.2"

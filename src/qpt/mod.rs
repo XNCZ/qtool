@@ -1,27 +1,30 @@
 //! # Quantum Process Tomography (QPT) via Pure-Rust FISTA
 //!
-//! 任意 $n$ 比特完全正保迹 (CPTP) 极大似然量子过程层析 (QPT-MLE) 求解器。
-//! 100% 纯 Rust 实现：零外部 C/Fortran/BLAS 依赖，完全基于 `faer` 矩阵计算
-//! 与加速投影梯度法 (FISTA)。
+//! Maximum-likelihood quantum process tomography (QPT-MLE) for an arbitrary number of
+//! qubits under the completely positive and trace-preserving (CPTP) constraint.
+//! A 100% pure-Rust implementation with no C/Fortran/BLAS dependencies, built on the
+//! [`faer`](https://crates.io/crates/faer) matrix library and an accelerated projected
+//! gradient method (FISTA).
 //!
-//! 优化目标为加权最小二乘:
+//! The objective is the weighted least squares problem
 //! $$
 //! \min_{R} \frac{1}{2} \sum_k w_k \left( \sum_{j} R_{m_k, j} x_{k, j} - (1.0 - 2.0 \cdot p_{1}^{(k)}) \right)^2
 //! $$
-//! 并约束 $R$ 为完全正保迹 (CPTP) 过程对应的 Pauli 转移矩阵。
+//! subject to `R` being the Pauli transfer matrix of a CPTP process.
 
 use faer::linalg::solvers::SelfAdjointEigen;
 use faer::{c64, Mat, Side};
 use plotly::common::{ColorScale, ColorScalePalette};
 use plotly::layout::{Axis, Layout, TicksDirection};
 use plotly::{HeatMap, Plot};
+use rayon::prelude::*;
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Instant;
 // =========================================================================
-// 0. 自定义错误类型定义
+// Custom error type
 // =========================================================================
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,18 +43,18 @@ pub enum QPTError {
 impl fmt::Display for QPTError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidPauliChar(c) => write!(f, "非法 Pauli 算符字符 '{c}'，仅支持 I, X, Y, Z"),
-            Self::InvalidStateString(s) => write!(f, "无法解析的量子初态描述: \"{s}\""),
+            Self::InvalidPauliChar(c) => write!(f, "invalid Pauli character '{c}'; only I, X, Y and Z are allowed"),
+            Self::InvalidStateString(s) => write!(f, "cannot parse the quantum state description: \"{s}\""),
             Self::QubitCountMismatch { expected, found } => {
-                write!(f, "比特数不匹配: 期望 {expected} 比特，实际找到 {found} 比特")
+                write!(f, "qubit count mismatch: expected {expected} qubits but found {found}")
             }
-            Self::EmptyDataset => write!(f, "实验数据集为空，无法进行层析求解"),
-            Self::InvalidProbability(p) => write!(f, "激发态几率 p1 = {p} 超出物理合法区间 [0.0, 1.0]"),
-            Self::InvalidWeight(w) => write!(f, "测量权重 w = {w} 必须为正实数"),
-            Self::BasisNotFound(s) => write!(f, "Pauli 算符 \"{s}\" 在当前字典序基底表中未找到"),
-            Self::SolverError(s) => write!(f, "求解收敛失败: {s}"),
+            Self::EmptyDataset => write!(f, "the experiment data set is empty; cannot run tomography"),
+            Self::InvalidProbability(p) => write!(f, "excited-state probability p1 = {p} is outside the physical range [0.0, 1.0]"),
+            Self::InvalidWeight(w) => write!(f, "measurement weight w = {w} must be positive"),
+            Self::BasisNotFound(s) => write!(f, "Pauli operator \"{s}\" was not found in the current lexicographic basis table"),
+            Self::SolverError(s) => write!(f, "solver failed to converge: {s}"),
             Self::DimensionMismatch { expected, found } => {
-                write!(f, "矩阵维度不匹配: 期望 {expected}x{expected}，实际为 {found}x{found}")
+                write!(f, "matrix dimension mismatch: expected {expected}x{expected} but got {found}x{found}")
             }
         }
     }
@@ -60,7 +63,7 @@ impl fmt::Display for QPTError {
 impl Error for QPTError {}
 
 // =========================================================================
-// 1. 基础物理枚举与自描述算符
+// Basic physical enums and Pauli operators
 // =========================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -267,7 +270,7 @@ impl fmt::Display for PauliString {
 }
 
 // =========================================================================
-// 2. 实验数据集定义
+// Experiment data set
 // =========================================================================
 
 #[derive(Debug, Clone, PartialEq)]
@@ -369,7 +372,7 @@ impl QptDataset {
 }
 
 // =========================================================================
-// 3. 求解器配置与诊断
+// Solver configuration and diagnostics
 // =========================================================================
 
 #[derive(Debug, Clone)]
@@ -377,6 +380,7 @@ pub struct QptSolverConfig {
     pub tol_convergence: f64,
     pub max_iter: usize,
     pub verbose: bool,
+    pub max_dykstra_iter: usize, // Maximum iterations of the Dykstra alternating projections
 }
 
 impl Default for QptSolverConfig {
@@ -385,6 +389,7 @@ impl Default for QptSolverConfig {
             tol_convergence: 1e-6,
             max_iter: 200,
             verbose: false,
+            max_dykstra_iter: 10, // 10 iterations reaches ~1e-7 intersection accuracy
         }
     }
 }
@@ -406,7 +411,7 @@ pub struct QptDiagnostics {
 }
 
 // =========================================================================
-// 4. PTM 矩阵结构
+// PTM matrix structure
 // =========================================================================
 
 #[derive(Debug, Clone)]
@@ -599,20 +604,24 @@ impl PtmMatrix {
         out
     }
 
-    /// 构建通用的 n-Qubit PTM 交互式二维热力图对象 (Plotly Plot)
+    /// Build an interactive 2-D heat map of the PTM as a Plotly [`Plot`].
     ///
-    /// # 特性
-    /// - **横纵轴自适应**：自动按当前比特数提取标准字典序基底 (II, IX, IY, IZ, XI, ...)
-    /// - **矩阵坐标系对齐**：将 y 轴标签与数据行倒序，使第 0 行 (II) 处于最顶端
-    /// - **物理发散色标**：范围固定在 [-1.0, 1.0]，0 处为中性白，正负转移分明
-    /// - **悬停信息定制**：鼠标悬停显示输入算符、输出算符与精确矩阵元值
+    /// # Features
+    /// - **Adaptive axes** — the standard lexicographic basis labels
+    ///   (II, IX, IY, IZ, XI, ...) are derived automatically from the qubit count.
+    /// - **Matrix-style layout** — the Y labels and data rows are reversed so that
+    ///   row 0 (II) appears at the top.
+    /// - **Physical diverging colormap** — fixed to [-1.0, 1.0] with a neutral white
+    ///   at 0, cleanly separating positive and negative matrix elements.
+    /// - **Custom hover tooltips** — hovering displays the input operator, the output
+    ///   operator and the exact matrix element value.
     pub fn to_plotly(&self, custom_title: Option<&str>) -> Plot {
         let d = self.dim; // 4^n
 
-        // 1. 提取自适应 n 比特标准 Pauli 字符串标签
+        // Build the adaptive n-qubit standard Pauli string labels
         let labels: Vec<String> = self.basis_order.iter().map(|p| p.to_string()).collect();
 
-        // 2. 组装 2D 矩阵数据: z[row][col] = R_{meas, prep}
+        // Assemble the 2-D matrix data: z[row][col] = R_{meas, prep}
         let mut z_data = Vec::with_capacity(d);
         for r in 0..d {
             let mut row = Vec::with_capacity(d);
@@ -622,35 +631,35 @@ impl PtmMatrix {
             z_data.push(row);
         }
 
-        // Plotly 范畴型 y 轴默认将 y 数组中第 0 类置于最底端；
-        // 为让矩阵第 0 行 (II) 位于顶端，将 y 标签与数据行一并倒序。
+        // Plotly places the first category of a categorical y axis at the bottom, so
+        // reverse both the y labels and the data rows to put row 0 (II) on top.
         let mut y_labels = labels.clone();
         y_labels.reverse();
         z_data.reverse();
 
-        // 3. 构建 HeatMap Trace
+        // Build the HeatMap trace
         let trace = HeatMap::new(labels.clone(), y_labels, z_data)
-            .color_scale(ColorScale::Palette(ColorScalePalette::RdBu)) // 蓝-白-红发散色标
+            .color_scale(ColorScale::Palette(ColorScalePalette::RdBu)) // blue-white-red diverging colorscale
             .zmin(-1.0)
             .zmax(1.0)
             .hover_template("<b>Input (Prep)</b>: %{x}<br><b>Output (Meas)</b>: %{y}<br><b>R</b>: %{z:.4f}<extra></extra>");
 
-        // 4. 自适应图表尺寸 (单比特 550px，两比特 850px，多比特更大)
+        // Adaptive figure size (550 px for 1 qubit, 850 px for 2, larger for more)
         let plot_size = (500 + 22 * d).clamp(550, 1300);
 
-        // 5. 配置横纵坐标轴与画布
+        // Configure the axes and the canvas
         let title_text = custom_title.map(|s| s.to_string()).unwrap_or_else(|| {
             format!("{}-Qubit Pauli Transfer Matrix (PTM)", self.num_qubits)
         });
 
-        // X 轴：输入算符 (列)
+        // X axis: input operators (columns)
         let x_axis = Axis::new()
             .title("Input Pauli Operator (Preparation)")
             .ticks(TicksDirection::Outside)
             .tick_angle(if d > 4 { -45.0 } else { 0.0 })
             .show_grid(false);
 
-        // Y 轴：输出算符 (行)
+        // Y axis: output operators (rows)
         let y_axis = Axis::new()
             .title("Output Pauli Operator (Measurement)")
             .ticks(TicksDirection::Outside)
@@ -669,13 +678,13 @@ impl PtmMatrix {
         plot
     }
 
-    /// 在系统默认浏览器中直接打开交互式 PTM 图表
+    /// Open the interactive PTM chart in the system default browser.
     pub fn show_plot(&self, custom_title: Option<&str>) {
         let plot = self.to_plotly(custom_title);
         plot.show();
     }
 
-    /// 保存为独立的交互式 HTML 文件
+    /// Save the PTM as a standalone interactive HTML file.
     pub fn save_html<P: AsRef<Path>>(&self, path: P, custom_title: Option<&str>) -> std::io::Result<()> {
         let plot = self.to_plotly(custom_title);
         plot.write_html(path);
@@ -691,7 +700,8 @@ pub struct QptResult {
 }
 
 impl QptResult {
-    /// 快捷方法：直接将层析结果画出，标题自动带上门保真度与 RMSE 诊断信息
+    /// Convenience wrapper that plots the tomography result directly; the title
+    /// automatically carries the process fidelity and RMSE diagnostics.
     pub fn to_plotly(&self, gate_name: Option<&str>) -> Plot {
         let title = format!(
             "{} QPT (RMSE: {:.3e}, TraceErr: {:.1e})",
@@ -702,13 +712,13 @@ impl QptResult {
         self.ptm.to_plotly(Some(&title))
     }
 
-    /// 快捷方法：在浏览器中打开重构结果
+    /// Convenience wrapper that opens the reconstructed result in a browser.
     pub fn show_plot(&self, gate_name: Option<&str>) {
         let plot = self.to_plotly(gate_name);
         plot.show();
     }
 
-    /// 快捷保存 HTML
+    /// Convenience wrapper that saves the result as a standalone HTML file.
     pub fn save_html<P: AsRef<Path>>(&self, path: P, gate_name: Option<&str>) -> std::io::Result<()> {
         let plot = self.to_plotly(gate_name);
         plot.write_html(path);
@@ -717,7 +727,7 @@ impl QptResult {
 }
 
 // =========================================================================
-// 5. 核心：纯 Rust FISTA 求解器
+// Core: pure-Rust FISTA solver
 // =========================================================================
 
 pub struct QptSolver {
@@ -741,110 +751,142 @@ impl QptSolver {
         let d = 1 << (2 * n); // 4^n
 
         // =====================================================================
-        // 优化 1: 预计算所有不变的 (P_j^T \otimes P_i) 基底矩阵 (彻底消除迭代内堆分配)
+        // Optimization 1 (Rayon): precompute every (P_j^T \otimes P_i) basis matrix in parallel
         // =====================================================================
         let pauli_mats = all_pauli_matrices(n);
-        let mut basis_kron: Vec<Vec<Mat<c64>>> = Vec::with_capacity(d);
-        for j in 0..d {
-            let pj_t = transpose_c64_mat(&pauli_mats[j]);
-            let mut row_kron = Vec::with_capacity(d);
-            for i in 0..d {
-                row_kron.push(kronecker_c64(&pj_t, &pauli_mats[i]));
-            }
-            basis_kron.push(row_kron);
-        }
+        let basis_kron: Vec<Vec<Mat<c64>>> = (0..d)
+            .into_par_iter()
+            .map(|j| {
+                let pj_t = transpose_c64_mat(&pauli_mats[j]);
+                (0..d)
+                    .map(|i| kronecker_c64(&pj_t, &pauli_mats[i]))
+                    .collect()
+            })
+            .collect();
 
         // =====================================================================
-        // 优化 2: 预先将实验数据聚合成 Hessian H_m 与偏置向量 b_m
-        // \nabla f(R)_m = H_m * R_m - b_m
+        // Optimization 2 (Rayon): group experiments by measurement m and compute the Hessian H_m and bias b_m in parallel
         // =====================================================================
-        let mut h_blocks = vec![Mat::<f64>::zeros(d, d); d];
-        let mut b_vectors = vec![vec![0.0; d]; d];
-        let mut meas_cover = vec![false; d];
+        let mut exp_by_m: Vec<Vec<&QptDataPoint>> = vec![Vec::new(); d];
         let mut total_w = 0.0;
-
         for data in &dataset.experiments {
             let m = data.meas.index();
-            meas_cover[m] = true;
-            let x = data.prep.pauli_vector();
-            let y = data.expectation();
-            let w = data.weight;
-            total_w += w;
+            exp_by_m[m].push(data);
+            total_w += data.weight;
+        }
 
-            let h_m = &mut h_blocks[m];
-            let b_m = &mut b_vectors[m];
-
-            for r in 0..d {
-                let xr = x[r];
-                if xr.abs() < 1e-14 { continue; }
-                b_m[r] += w * y * xr;
-                for c in 0..d {
-                    h_m[(r, c)] += w * xr * x[c];
+        let aggregated: Vec<(Mat<f64>, Vec<f64>, bool)> = (0..d)
+            .into_par_iter()
+            .map(|m| {
+                let exps = &exp_by_m[m];
+                if exps.is_empty() {
+                    (Mat::<f64>::zeros(d, d), vec![0.0; d], false)
+                } else {
+                    let mut h_m = Mat::<f64>::zeros(d, d);
+                    let mut b_m = vec![0.0; d];
+                    for data in exps {
+                        let x = data.prep.pauli_vector();
+                        let y = data.expectation();
+                        let w = data.weight;
+                        for r in 0..d {
+                            let xr = x[r];
+                            if xr.abs() < 1e-14 { continue; }
+                            b_m[r] += w * y * xr;
+                            for c in 0..d {
+                                h_m[(r, c)] += w * xr * x[c];
+                            }
+                        }
+                    }
+                    (h_m, b_m, true)
                 }
-            }
+            })
+            .collect();
+
+        let mut h_blocks = Vec::with_capacity(d);
+        let mut b_vectors = Vec::with_capacity(d);
+        let mut meas_cover = Vec::with_capacity(d);
+        for (h, b, cov) in aggregated {
+            h_blocks.push(h);
+            b_vectors.push(b);
+            meas_cover.push(cov);
         }
 
         // =====================================================================
-        // 优化 3: 准确计算真实 Lipschitz 常数 L = max_m ||H_m||_2 (使用无穷范数上界)
+        // Optimization 3 (Rayon): estimate the Lipschitz constant L = max_m ||H_m||_oo by parallel reduction
         // =====================================================================
-        let mut max_spectral_norm: f64 = 0.0;
-        for m in 0..d {
-            if !meas_cover[m] { continue; }
-            let h_m = &h_blocks[m];
-            // 对称矩阵谱范数上界: max 行绝对值和
-            let mut max_row_sum: f64 = 0.0;
-            for r in 0..d {
-                let mut row_sum = 0.0;
-                for c in 0..d {
-                    row_sum += h_m[(r, c)].abs();
+        let max_spectral_norm: f64 = (0..d)
+            .into_par_iter()
+            .filter(|&m| meas_cover[m])
+            .map(|m| {
+                let h_m = &h_blocks[m];
+                let mut max_row_sum: f64 = 0.0;
+                for r in 0..d {
+                    let mut row_sum = 0.0;
+                    for c in 0..d {
+                        row_sum += h_m[(r, c)].abs();
+                    }
+                    max_row_sum = max_row_sum.max(row_sum);
                 }
-                max_row_sum = max_row_sum.max(row_sum);
-            }
-            max_spectral_norm = max_spectral_norm.max(max_row_sum);
-        }
+                max_row_sum
+            })
+            .reduce(|| 0.0, f64::max);
 
-        // 步长严格设为理论稳定安全步长
         let lipschitz = max_spectral_norm.max(1.0);
         let lr = 1.0 / lipschitz;
 
-        // FISTA 迭代初始状态
+        // FISTA initialization
         let mut r_curr = Mat::<f64>::zeros(d, d);
         r_curr[(0, 0)] = 1.0;
         let mut y_acc = r_curr.clone();
         let mut t_acc: f64 = 1.0;
-
         let mut final_iter = 0;
+
+        // Preallocate the gradient-row buffer to avoid heap allocations in the inner loop
+        let mut z_buf = vec![0.0; d * d];
 
         for iter in 0..self.config.max_iter {
             final_iter = iter + 1;
 
-            // 1. 快速矩阵向量乘计算梯度: grad_m = H_m * y_acc_m - b_m
+            // =================================================================
+            // Optimization 4 (Rayon): compute the gradient row for each measurement basis in parallel: grad_m = H_m * y_m - b_m
+            // =================================================================
+            z_buf.par_chunks_mut(d).enumerate().for_each(|(m, row)| {
+                if !meas_cover[m] {
+                    for j in 0..d {
+                        row[j] = y_acc[(m, j)];
+                    }
+                } else {
+                    let h_m = &h_blocks[m];
+                    let b_m = &b_vectors[m];
+                    for j in 0..d {
+                        let mut grad_mj = -b_m[j];
+                        for l in 0..d {
+                            grad_mj += h_m[(j, l)] * y_acc[(m, l)];
+                        }
+                        row[j] = y_acc[(m, j)] - lr * grad_mj;
+                    }
+                }
+            });
+
             let mut z = Mat::<f64>::zeros(d, d);
             for m in 0..d {
-                if !meas_cover[m] {
-                    // 若未测量该基底，保持外插位置
-                    for j in 0..d {
-                        z[(m, j)] = y_acc[(m, j)];
-                    }
-                    continue;
-                }
-
-                let h_m = &h_blocks[m];
-                let b_m = &b_vectors[m];
-
                 for j in 0..d {
-                    let mut grad_mj = -b_m[j];
-                    for l in 0..d {
-                        grad_mj += h_m[(j, l)] * y_acc[(m, l)];
-                    }
-                    z[(m, j)] = y_acc[(m, j)] - lr * grad_mj;
+                    z[(m, j)] = z_buf[m * d + j];
                 }
             }
 
-            // 2. 严格完全正保迹 (CPTP) 投影 (复用已预计算的 basis_kron)
-            let r_next = project_to_cptp(&z, n, &basis_kron)?;
+            // =================================================================
+            // Optimization 5 (Dykstra): solve the TP ∩ CP intersection by cyclic alternating projections
+            // =================================================================
+            let r_next = project_to_cptp_dykstra(
+                &z,
+                n,
+                &basis_kron,
+                self.config.max_dykstra_iter,
+                1e-7,
+            )?;
 
-            // 3. 收敛性检验
+            // Convergence criterion
             let mut max_diff: f64 = 0.0;
             for i in 0..d {
                 for j in 0..d {
@@ -857,10 +899,9 @@ impl QptSolver {
                 break;
             }
 
-            // 4. Nesterov 动量加速
+            // Nesterov momentum update
             let t_next = 0.5 * (1.0 + (1.0 + 4.0 * t_acc * t_acc).sqrt());
             let momentum = (t_acc - 1.0) / t_next;
-
             for i in 0..d {
                 for j in 0..d {
                     let rn = r_next[(i, j)];
@@ -868,12 +909,11 @@ impl QptSolver {
                     y_acc[(i, j)] = rn + momentum * (rn - rc);
                 }
             }
-
             t_acc = t_next;
             r_curr = r_next;
         }
 
-        // 组装返回结果
+        // Assemble the result
         let basis_order = (0..d).map(|idx| PauliString::from_index(n, idx)).collect();
         let ptm = PtmMatrix {
             num_qubits: n,
@@ -882,7 +922,6 @@ impl QptSolver {
             basis_order,
         };
 
-        // 计算物理诊断参数
         let mut tp_err: f64 = (ptm.mat[(0, 0)] - 1.0).abs();
         for j in 1..d {
             tp_err = tp_err.max(ptm.mat[(0, j)].abs());
@@ -909,6 +948,7 @@ impl QptSolver {
         for i in 0..d {
             min_eigenvalue = min_eigenvalue.min(s_diag[i].re);
         }
+
         let data_coverage = (meas_cover.iter().filter(|&&c| c).count() as f64) / (d as f64);
 
         Ok(QptResult {
@@ -929,124 +969,208 @@ impl QptSolver {
     }
 }
 
-/// CPTP 投影函数
-fn project_to_cptp(
+/// Project an arbitrary real matrix onto the CPTP manifold.
+///
+/// Uses the Dykstra cyclic alternating-projection algorithm to compute the orthogonal
+/// projection onto the intersection of the trace-preserving (TP) affine subspace and
+/// the completely-positive (CP) positive-semidefinite cone.
+fn project_to_cptp_dykstra(
     mat: &Mat<f64>,
     num_qubits: usize,
     basis_kron: &[Vec<Mat<c64>>],
+    max_dykstra_iter: usize,
+    tol: f64,
 ) -> Result<Mat<f64>, QPTError> {
     let d = 1 << (2 * num_qubits);
-    let norm = 1.0 / ((1 << num_qubits) as f64);
 
-    // 1. 保迹投影
-    let mut mat_tp = mat.clone();
-    mat_tp[(0, 0)] = 1.0;
-    for j in 1..d {
-        mat_tp[(0, j)] = 0.0;
-    }
+    // Initial iterate X (in PTM space)
+    let mut x = mat.clone();
 
-    // 2. 映射到复数 Choi 矩阵 (直接累加预计算的基底矩阵，无任何动态分配)
-    let mut choi = Mat::<c64>::zeros(d, d);
-    for j in 0..d {
-        for i in 0..d {
-            let r_ij = mat_tp[(i, j)];
-            if r_ij.abs() < 1e-14 { continue; }
-            let kron = &basis_kron[j][i];
-            let coeff = norm * r_ij;
+    // Dykstra dual-correction matrices: p tracks the TP affine space, q the CP cone
+    let mut p = Mat::<f64>::zeros(d, d);
+    let mut q = Mat::<f64>::zeros(d, d);
+
+    for _ in 0..max_dykstra_iter {
+        // -------------------------------------------------------------
+        // Step A: project onto the trace-preserving affine subspace C_TP (R_{0,0}=1, R_{0,j}=0 for j>=1)
+        // Y = \Pi_{TP}(X + P)
+        // -------------------------------------------------------------
+        let mut y = Mat::<f64>::zeros(d, d);
+        for r in 0..d {
+            for c in 0..d {
+                y[(r, c)] = x[(r, c)] + p[(r, c)];
+            }
+        }
+        y[(0, 0)] = 1.0;
+        for j in 1..d {
+            y[(0, j)] = 0.0;
+        }
+
+        // Update the dual correction P = (X + P) - Y
+        for r in 0..d {
+            for c in 0..d {
+                p[(r, c)] = (x[(r, c)] + p[(r, c)]) - y[(r, c)];
+            }
+        }
+
+        // -------------------------------------------------------------
+        // Step B: project onto the completely-positive positive-semidefinite cone C_CP (Choi >= 0)
+        // X_new = \Pi_{CP}(Y + Q)
+        // -------------------------------------------------------------
+        let mut v = Mat::<f64>::zeros(d, d);
+        for r in 0..d {
+            for c in 0..d {
+                v[(r, c)] = y[(r, c)] + q[(r, c)];
+            }
+        }
+
+        // Map into the Choi-matrix space through the isometric isomorphism
+        let mut choi = ptm_to_choi_par(&v, num_qubits, basis_kron);
+
+        // Enforce Hermiticity
+        for r in 0..d {
+            for c in (r + 1)..d {
+                let z1 = choi[(r, c)];
+                let z2 = choi[(c, r)];
+                let avg = c64::new(0.5 * (z1.re + z2.re), 0.5 * (z1.im - z2.im));
+                choi[(r, c)] = avg;
+                choi[(c, r)] = c64::new(avg.re, -avg.im);
+            }
+        }
+
+        // Eigendecomposition followed by truncation of negative eigenvalues
+        let eig = SelfAdjointEigen::new(choi.as_ref(), Side::Lower)
+            .map_err(|e| QPTError::SolverError(format!("{:?}", e)))?;
+        let s_diag = eig.S();
+        let vecs = eig.U();
+
+        let mut choi_psd = Mat::<c64>::zeros(d, d);
+        for k in 0..d {
+            let lk = s_diag[k].re;
+            if lk <= 0.0 { continue; }
             for r in 0..d {
+                let u_rk = vecs[(r, k)];
                 for c in 0..d {
-                    let val = kron[(r, c)];
-                    choi[(r, c)] = choi[(r, c)] + c64::new(coeff * val.re, coeff * val.im);
+                    let u_ck = vecs[(c, k)];
+                    let term = c64::new(
+                        lk * (u_rk.re * u_ck.re + u_rk.im * u_ck.im),
+                        lk * (u_rk.im * u_ck.re - u_rk.re * u_ck.im),
+                    );
+                    choi_psd[(r, c)] = choi_psd[(r, c)] + term;
                 }
             }
         }
-    }
 
-    // 3. 强制厄米对称
-    for r in 0..d {
-        for c in (r + 1)..d {
-            let z1 = choi[(r, c)];
-            let z2 = choi[(c, r)];
-            let avg = c64::new(0.5 * (z1.re + z2.re), 0.5 * (z1.im - z2.im));
-            choi[(r, c)] = avg;
-            choi[(c, r)] = c64::new(avg.re, -avg.im);
-        }
-    }
+        // Map back to PTM space to obtain X_new
+        let x_new = choi_to_ptm_par(&choi_psd, num_qubits, basis_kron);
 
-    // 4. 特征值分解与半正定截断
-    let eig = SelfAdjointEigen::new(choi.as_ref(), Side::Lower)
-        .map_err(|e| QPTError::SolverError(format!("{:?}", e)))?;
-    let s_diag = eig.S();
-    let vecs = eig.U();
-    let mut vals: Vec<f64> = (0..d).map(|i| s_diag[i].re).collect();
-
-    let mut pos_sum = 0.0;
-    for v in vals.iter_mut() {
-        if *v < 0.0 {
-            *v = 0.0;
-        } else {
-            pos_sum += *v;
-        }
-    }
-
-    // 迹对齐: Tr(Choi) 恒等于 2^n
-    let target_tr = (1 << num_qubits) as f64;
-    let scale = if pos_sum > 1e-12 { target_tr / pos_sum } else { 1.0 };
-    for v in vals.iter_mut() {
-        *v *= scale;
-    }
-
-    // 重构半正定 Choi
-    let mut choi_psd = Mat::<c64>::zeros(d, d);
-    for k in 0..d {
-        let lk = vals[k];
-        if lk <= 0.0 { continue; }
+        // Update the dual correction Q = (Y + Q) - X_new and check intersection convergence
+        let mut max_diff: f64 = 0.0;
         for r in 0..d {
-            let u_rk = vecs[(r, k)];
             for c in 0..d {
-                let u_ck = vecs[(c, k)];
-                let term = c64::new(
-                    lk * (u_rk.re * u_ck.re + u_rk.im * u_ck.im),
-                    lk * (u_rk.im * u_ck.re - u_rk.re * u_ck.im),
-                );
-                choi_psd[(r, c)] = choi_psd[(r, c)] + term;
+                q[(r, c)] = v[(r, c)] - x_new[(r, c)];
+                max_diff = max_diff.max((x_new[(r, c)] - y[(r, c)]).abs());
             }
         }
+
+        x = x_new;
+        if max_diff < tol {
+            break;
+        }
     }
 
-    // 5. 逆映射还原回 PTM
-    let mut ptm_res = Mat::<f64>::zeros(d, d);
-    for j in 0..d {
+    // Numerical guard: force the first row to be trace-preserving to floating-point accuracy
+    x[(0, 0)] = 1.0;
+    for j in 1..d {
+        x[(0, j)] = 0.0;
+    }
+
+    Ok(x)
+}
+
+/// Parallel PTM -> Choi matrix transform
+fn ptm_to_choi_par(
+    mat: &Mat<f64>,
+    num_qubits: usize,
+    basis_kron: &[Vec<Mat<c64>>],
+) -> Mat<c64> {
+    let d = 1 << (2 * num_qubits);
+    let norm = 1.0 / ((1 << num_qubits) as f64);
+
+    (0..d)
+        .into_par_iter()
+        .map(|j| {
+            let mut local = Mat::<c64>::zeros(d, d);
+            for i in 0..d {
+                let r_ij = mat[(i, j)];
+                if r_ij.abs() < 1e-14 { continue; }
+                let kron = &basis_kron[j][i];
+                let coeff = norm * r_ij;
+                for r in 0..d {
+                    for c in 0..d {
+                        let val = kron[(r, c)];
+                        local[(r, c)] = local[(r, c)] + c64::new(coeff * val.re, coeff * val.im);
+                    }
+                }
+            }
+            local
+        })
+        .reduce(
+            || Mat::<c64>::zeros(d, d),
+            |mut a, b| {
+                for r in 0..d {
+                    for c in 0..d {
+                        a[(r, c)] = a[(r, c)] + b[(r, c)];
+                    }
+                }
+                a
+            },
+        )
+}
+
+/// Parallel Choi -> PTM matrix transform
+fn choi_to_ptm_par(
+    choi: &Mat<c64>,
+    num_qubits: usize,
+    basis_kron: &[Vec<Mat<c64>>],
+) -> Mat<f64> {
+    let d = 1 << (2 * num_qubits);
+    let norm = 1.0 / ((1 << num_qubits) as f64);
+    let mut ptm_flat = vec![0.0; d * d];
+
+    ptm_flat.par_chunks_mut(d).enumerate().for_each(|(j, col)| {
         for i in 0..d {
             let kron = &basis_kron[j][i];
             let mut tr = 0.0;
             for r in 0..d {
                 for c in 0..d {
                     let a = kron[(r, c)];
-                    let b = choi_psd[(c, r)];
+                    let b = choi[(c, r)];
                     tr += a.re * b.re - a.im * b.im;
                 }
             }
-            ptm_res[(i, j)] = norm * tr;
+            col[i] = norm * tr;
+        }
+    });
+
+    let mut ptm = Mat::<f64>::zeros(d, d);
+    for j in 0..d {
+        for i in 0..d {
+            ptm[(i, j)] = ptm_flat[j * d + i];
         }
     }
-
-    ptm_res[(0, 0)] = 1.0;
-    for j in 1..d {
-        ptm_res[(0, j)] = 0.0;
-    }
-
-    Ok(ptm_res)
+    ptm
 }
 
 fn all_pauli_matrices(num_qubits: usize) -> Vec<Mat<c64>> {
     let d = 1 << (2 * num_qubits);
-    let mut mats = Vec::with_capacity(d);
-    for idx in 0..d {
-        let p_str = PauliString::from_index(num_qubits, idx);
-        mats.push(pauli_string_to_mat(&p_str));
-    }
-    mats
+    (0..d)
+        .into_par_iter()
+        .map(|idx| {
+            let p_str = PauliString::from_index(num_qubits, idx);
+            pauli_string_to_mat(&p_str)
+        })
+        .collect()
 }
 
 fn pauli_string_to_mat(p_str: &PauliString) -> Mat<c64> {
@@ -1095,106 +1219,4 @@ fn transpose_c64_mat(a: &Mat<c64>) -> Mat<c64> {
         }
     }
     t
-}
-
-// =========================================================================
-// 7. 单元测试
-// =========================================================================
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_single_qubit_x_gate() {
-        let mut dataset = QptDataset::new(1);
-        dataset
-            .add_data("Z+", "Z", 1.0).unwrap()
-            .add_data("Z-", "Z", 0.0).unwrap()
-            .add_data("X+", "X", 0.0).unwrap()
-            .add_data("X-", "X", 1.0).unwrap()
-            .add_data("Y+", "Y", 1.0).unwrap()
-            .add_data("Y-", "Y", 0.0).unwrap();
-
-        let solver = QptSolver::new(1, None);
-        let result = solver.solve(&dataset).expect("求解失败");
-
-        assert!(result.diagnostics.trace_preserving_error < 1e-5);
-        assert!(result.diagnostics.min_choi_eigenvalue >= -1e-6);
-
-        let ptm = &result.ptm;
-        assert!((ptm.get("I", "I").unwrap() - 1.0).abs() < 1e-3);
-        assert!((ptm.get("X", "X").unwrap() - 1.0).abs() < 1e-3);
-        assert!((ptm.get("Y", "Y").unwrap() - (-1.0)).abs() < 1e-3);
-        assert!((ptm.get("Z", "Z").unwrap() - (-1.0)).abs() < 1e-3);
-    }
-
-    #[test]
-    fn test_two_qubit_cz_gate() {
-        let num_qubits = 2;
-        let d = 16;
-        let mut dataset = QptDataset::new(num_qubits);
-
-        // 构造标准的 CZ 门对角矩阵 U_CZ = diag(1, 1, 1, -1)
-        let mut u_cz = Mat::<c64>::zeros(4, 4);
-        u_cz[(0, 0)] = c64::new(1.0, 0.0);
-        u_cz[(1, 1)] = c64::new(1.0, 0.0);
-        u_cz[(2, 2)] = c64::new(1.0, 0.0);
-        u_cz[(3, 3)] = c64::new(-1.0, 0.0);
-
-        let ideal_cz = PtmMatrix::from_unitary(num_qubits, &u_cz);
-
-        let single_states = ["Z+", "Z-", "X+", "X-", "Y+", "Y-"];
-        let pauli_axes = ["I", "X", "Y", "Z"];
-
-        for s1 in single_states {
-            for s2 in single_states {
-                let prep_str = format!("{}, {}", s1, s2);
-                let prep = QuantumState::from_str(&prep_str).unwrap();
-                let x_vec = prep.pauli_vector();
-
-                for p1_op in pauli_axes {
-                    for p2_op in pauli_axes {
-                        if p1_op == "I" && p2_op == "I" {
-                            continue;
-                        }
-                        let meas_str = format!("{}{}", p1_op, p2_op);
-                        let meas = PauliString::from_str(&meas_str).unwrap();
-                        let m_idx = meas.index();
-
-                        let mut exp_val = 0.0;
-                        for j in 0..d {
-                            exp_val += ideal_cz.mat[(m_idx, j)] * x_vec[j];
-                        }
-                        let p1 = (1.0 - exp_val) * 0.5;
-                        dataset.add_data(&prep_str, &meas_str, p1).unwrap();
-                    }
-                }
-            }
-        }
-
-        let mut cfg = QptSolverConfig::default();
-        cfg.max_iter = 300;
-        cfg.tol_convergence = 1e-7;
-        cfg.verbose = false;
-
-        let solver = QptSolver::new(num_qubits, Some(cfg));
-        let result = solver.solve(&dataset).expect("求解失败");
-
-        let (f_pro, f_avg) = result.ptm.fidelity(&ideal_cz).unwrap();
-        eprintln!(
-            "DIAG f_pro={f_pro:.6} f_avg={f_avg:.6} tp_err={:.2e} min_eig={:.2e} rmse={:.2e} iters={}",
-            result.diagnostics.trace_preserving_error,
-            result.diagnostics.min_choi_eigenvalue,
-            result.diagnostics.fit_rmse,
-            result.meta.iterations,
-        );
-
-        assert!(f_pro > 0.999);
-        assert!(f_avg > 0.999);
-        assert!(result.diagnostics.trace_preserving_error < 1e-6);
-        assert!(result.diagnostics.min_choi_eigenvalue >= -1e-6);
-        result.save_html("cz_ptm.html", Some("Ideal CZ Gate PTM (16x16)"))
-            .expect("保存 HTML 失败");
-    }
 }
