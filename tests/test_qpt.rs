@@ -1,5 +1,5 @@
 use faer::{c64, Mat};
-use qtool::qpt::{
+use cz_qtool::qpt::{
     PauliString, PtmMatrix, QptDataset, QptSolver, QptSolverConfig,
 };
 use rand::prelude::*;
@@ -114,7 +114,7 @@ fn test_single_round<R: Rng>(round_idx: usize, num_qubits: usize, rng: &mut R) -
     let mut dataset = QptDataset::new(num_qubits);
 
     for prep_str in &prep_states {
-        let prep_state = prep_str.parse::<qtool::qpt::QuantumState>().unwrap();
+        let prep_state = prep_str.parse::<cz_qtool::qpt::QuantumState>().unwrap();
         let x = prep_state.pauli_vector();
 
         for meas_str in &meas_strings {
