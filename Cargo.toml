@@ -1,0 +1,10 @@
+[package]
+name = "qtool"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+
+[dependencies]
+faer = "0.24.4"
+plotly = "0.14.1"
