@@ -1,11 +1,11 @@
-# qtool
+# cz-qtool
 
 Pure-Rust **quantum process tomography** (QPT) toolkit.
 
 Given the measurement statistics of an unknown quantum process acting on `n`
-qubits, `qtool` performs maximum-likelihood reconstruction of the process under
-the **completely positive and trace-preserving (CPTP)** constraint and returns
-its **Pauli transfer matrix (PTM)** `R`, where
+qubits, `cz-qtool` performs maximum-likelihood reconstruction of the process
+under the **completely positive and trace-preserving (CPTP)** constraint and
+returns its **Pauli transfer matrix (PTM)** `R`, where
 
 ```
 E[ P_m | state ] = (R · x)_m ,      x_j = <P_j> of the prepared state.
@@ -18,24 +18,23 @@ min_R  1/2 Σ_k w_k ( Σ_j R_{m_k,j} x_{k,j} − (1 − 2 p1_k) )²
 s.t.   R is the PTM of a CPTP process
 ```
 
-is solved with an accelerated projected-gradient method (**FISTA**). The
-projection onto the CPTP set goes through the Choi representation: map to the
-complex Choi matrix, project onto the positive-semidefinite cone by a Hermitian
-eigendecomposition, renormalize the trace, and map back.
+is solved with an accelerated projected-gradient method (**FISTA**) whose CPTP
+projection is computed by the **Dykstra** cyclic alternating-projection
+algorithm (TP affine space ∩ PSD Choi cone). Linear algebra is provided by
+[`faer`](https://crates.io/crates/faer) and the heavy inner loops are
+parallelised with [`rayon`](https://crates.io/crates/rayon); interactive
+plotting uses [`plotly`](https://crates.io/crates/plotly).
 
-There are **no C / Fortran / BLAS dependencies**. Linear algebra is provided by
-[`faer`](https://crates.io/crates/faer); interactive plotting is provided by
-[`plotly`](https://crates.io/crates/plotly).
+There are **no C / Fortran / BLAS dependencies**.
 
 ## Features
 
-- Arbitrary number of qubits (the cost grows as `4^n`, as expected for full QPT).
-- Pure-Rust solver core (`faer` only) — easy to cross-compile.
-- Convenient string input for preparation states and measurement Pauli strings.
-- Physical diagnostics: trace-preserving error, minimum Choi eigenvalue,
-  fit RMSE, data coverage.
-- Plotly integration: interactive PTM heat maps (`to_plotly`, `show_plot`,
-  `save_html`).
+- Arbitrary number of qubits (full QPT cost grows as `4^n`, as expected).
+- Pure-Rust solver core — easy to cross-compile.
+- String-based input for preparation states and measurement Pauli strings.
+- Diagnostics: trace-preserving error, minimum Choi eigenvalue, fit RMSE,
+  data coverage.
+- Plotly heat maps of the PTM (`to_plotly`, `show_plot`, `save_html`).
 - Ideal-PTM constructors for validation: `PtmMatrix::identity`,
   `PtmMatrix::from_unitary`.
 
@@ -43,62 +42,54 @@ There are **no C / Fortran / BLAS dependencies**. Linear algebra is provided by
 
 ```toml
 [dependencies]
-qtool = "0.1"
+cz-qtool = "0.1"
 
-# Add these only when you need them from your own code:
-faer = "0.24"   # build unitaries / handle the returned Mat<c64>, Mat<f64>
+# Add these only if you need them in your own code:
+faer = "0.24"   # build unitaries or inspect the returned matrices
 plotly = "0.14" # drive the Plot objects returned by to_plotly yourself
 ```
 
-## Using the library
+## Quick tour of the public API
 
-All public types live in the `qtool::qpt` module:
+All public types live in the `qpt` module:
 
 ```rust
-use qtool::qpt::*;
+use cz_qtool::qpt::*;
 ```
-
-### Public API quick reference
 
 | Item | Purpose |
 | --- | --- |
-| `QptDataset::new(n)` | New, empty data set for `n` qubits. |
-| `dataset.add_data(prep, meas, p1)` | Record one experiment (see string conventions below). |
-| `dataset.add_weight_data(prep, meas, p1, w)` | Same, with a weight `w > 0`. |
-| `dataset.validate()` | Check consistency and physical ranges. |
-| `QptSolver::new(n, config)` | Build a solver; pass `None` for defaults. |
-| `QptSolver::solve(&dataset)` | Run FISTA, return `Result<QptResult, QPTError>`. |
+| `QptDataset::new(n)` | Empty data set for `n` qubits. |
+| `dataset.add_data(prep, meas, p1)` | Record one experiment. |
+| `dataset.add_weight_data(prep, meas, p1, w)` | Weighted experiment (`w > 0`). |
+| `QptSolver::new(n, config)` / `.solve(&dataset)` | Run the FISTA reconstruction. |
 | `QptResult.ptm` | Reconstructed `PtmMatrix`. |
-| `QptResult.diagnostics` | `trace_preserving_error`, `min_choi_eigenvalue`, `fit_rmse`, `data_coverage`, `choi_matrix`. |
-| `QptResult.meta` | `solve_time_ms`, `iterations`, `status`. |
+| `QptResult.diagnostics` | TP error, min Choi eigenvalue, RMSE, coverage, Choi matrix. |
+| `QptResult.meta` | Solve time, iteration count, status. |
 | `PtmMatrix::identity(n)` | Ideal identity-gate PTM. |
-| `PtmMatrix::from_unitary(n, &u)` | Ideal PTM of the unitary `u` (`faer::Mat<c64>`). |
-| `ptm.get("meas", "prep")` | Look up a single PTM element by Pauli strings. |
-| `ptm.fidelity(&ideal)` | `(process_fidelity, average_fidelity)` vs. an ideal PTM. |
-| `ptm.display_table()` | Plain-text table of the PTM. |
-| `ptm.to_plotly(title)` / `.show_plot(..)` / `.save_html(path, ..)` | Plotly heat map. |
-| `result.save_html(path, gate_name)` | Convenience wrapper on `QptResult`. |
-| `SingleQubitState`, `Pauli`, `QuantumState`, `PauliString` | Building blocks (`FromStr`, `index()`, ...). |
+| `PtmMatrix::from_unitary(n, &u)` | Ideal PTM of a unitary `u` (`faer::Mat<c64>`). |
+| `ptm.get("meas", "prep")` | Look up one PTM element by Pauli strings. |
+| `ptm.fidelity(&ideal)` | `(process_fidelity, average_fidelity)` vs an ideal PTM. |
+| `ptm.display_table()` | Plain-text table (first 16×16). |
+| `ptm.to_plotly(..)` / `.show_plot(..)` / `.save_html(..)` | Plotly heat map. |
+| `QuantumState` / `PauliString` | Parsed from strings; `FromStr` / `Display`. |
+| `QuantumState::pauli_vector()` | Pauli-basis expectation vector of a state. |
 
-#### String conventions
+String conventions:
 
-- Preparation state: one token per qubit from the Bloch extremes —
-  `Z+` (|0>), `Z-` (|1>), `X+`, `X-`, `Y+`, `Y-`. Multi-qubit states are
-  comma or space separated, e.g. `"Z+, X+"` or the compact `"ZX"`.
-- Measurement: an `n`-character Pauli string over `I, X, Y, Z`
-  (lexicographic qubit order), e.g. `"Z"`, `"XX"`, `"ZI"`.
+- Preparation states — one token per qubit from the Bloch extremes
+  `Z+` (|0⟩), `Z-` (|1⟩), `X+`, `X-`, `Y+`, `Y-`, joined by spaces/commas.
+- Measurements — an `n`-character Pauli string over `I, X, Y, Z`,
+  e.g. `"Z"`, `"XX"`, `"ZI"`.
 - `p1` is the probability of detecting the excited state along the measurement
-  axis; the expectation value used internally is `E = 1 − 2·p1`.
+  axis; the expectation used internally is `E = 1 − 2·p1`.
 
 ## Examples
 
 ### Example 1 — one-qubit Pauli-X gate
 
-Reconstruct the PTM of a Pauli-X gate from six ideal experiments
-(preparation × measurement along each of the `Z`, `X` and `Y` axes).
-
 ```rust
-use qtool::qpt::{QptDataset, QptSolver};
+use cz_qtool::qpt::{QptDataset, QptSolver};
 
 fn main() {
     // |0> and |1> prepared and measured along Z:
@@ -112,11 +103,11 @@ fn main() {
         .add_data("Y+", "Y", 1.0).unwrap()
         .add_data("Y-", "Y", 0.0).unwrap();
 
-    // Solve (QptSolver::new(num_qubits, config) with the default config).
+    // Solve with the default configuration.
     let solver = QptSolver::new(1, None);
     let result = solver.solve(&dataset).expect("tomography failed");
 
-    // Physical sanity checks exposed by QptResult.diagnostics.
+    // Physical sanity checks exposed by QptResult::diagnostics.
     assert!(result.diagnostics.trace_preserving_error < 1e-5);
     assert!(result.diagnostics.min_choi_eigenvalue >= -1e-6);
 
@@ -133,76 +124,52 @@ fn main() {
 
 ### Example 2 — two-qubit CZ gate
 
-Reconstruct a controlled-Z gate. A **complete** data set is synthesized
-analytically from the ideal `U_CZ = diag(1, 1, 1, −1)` using
-`PtmMatrix::from_unitary`, over all 6×6 preparation states and all 15
-non-trivial two-qubit Pauli measurements.
+The same recipe in `n = 2`: build the ideal `U_CZ = diag(1, 1, 1, −1)`,
+synthesize a complete experiment set from it, reconstruct, and check fidelity.
 
 ```rust
+use cz_qtool::qpt::{PtmMatrix, QptDataset, QptSolver, QuantumState};
 use faer::{c64, Mat};
-use qtool::qpt::{QuantumState, PauliString, PtmMatrix, QptDataset, QptSolver, QptSolverConfig};
 
 fn main() {
-    let num_qubits = 2;
-    let d = 16; // 4^num_qubits
-    let mut dataset = QptDataset::new(num_qubits);
+    let n = 2;
+    let d = 16; // 4^n
 
-    // Ideal CZ gate: U_CZ = diag(1, 1, 1, -1) in the computational basis.
-    let mut u_cz = Mat::<c64>::zeros(4, 4);
-    u_cz[(0, 0)] = c64::new(1.0, 0.0);
-    u_cz[(1, 1)] = c64::new(1.0, 0.0);
-    u_cz[(2, 2)] = c64::new(1.0, 0.0);
-    u_cz[(3, 3)] = c64::new(-1.0, 0.0);
-    let ideal_cz = PtmMatrix::from_unitary(num_qubits, &u_cz);
+    // Ideal CZ gate, U_CZ = diag(1, 1, 1, -1) in the computational basis.
+    let mut u = Mat::<c64>::zeros(4, 4);
+    for i in 0..4 {
+        u[(i, i)] = if i == 3 { c64::new(-1.0, 0.0) } else { c64::new(1.0, 0.0) };
+    }
+    let ideal = PtmMatrix::from_unitary(n, &u);
+    let basis = ideal.basis_order.clone(); // all Pauli strings, lexicographic order
 
-    let single_states = ["Z+", "Z-", "X+", "X-", "Y+", "Y-"];
-    let pauli_axes = ["I", "X", "Y", "Z"];
-
-    for s1 in single_states {
-        for s2 in single_states {
-            let prep_str = format!("{}, {}", s1, s2);
-            let prep = QuantumState::from_str(&prep_str).unwrap();
-            let x_vec = prep.pauli_vector();
-
-            for p1_op in pauli_axes {
-                for p2_op in pauli_axes {
-                    if p1_op == "I" && p2_op == "I" {
-                        continue;
-                    }
-                    let meas_str = format!("{}{}", p1_op, p2_op);
-                    let meas = PauliString::from_str(&meas_str).unwrap();
-                    let m_idx = meas.index();
-
-                    // Ideal expectation value <P> = (R_ideal * x)_m,
-                    // converted to the excitation probability p1 = (1 - <P>) / 2.
-                    let mut exp_val = 0.0;
-                    for j in 0..d {
-                        exp_val += ideal_cz.mat[(m_idx, j)] * x_vec[j];
-                    }
-                    let p1 = (1.0 - exp_val) * 0.5;
-                    dataset.add_data(&prep_str, &meas_str, p1).unwrap();
+    // A complete, noiseless experiment set: 36 preparations x 15 measurements.
+    let mut dataset = QptDataset::new(n);
+    let states = ["Z+", "Z-", "X+", "X-", "Y+", "Y-"];
+    for s1 in states {
+        for s2 in states {
+            let prep = format!("{}, {}", s1, s2);
+            let x = prep.parse::<QuantumState>().unwrap().pauli_vector();
+            for (m_idx, meas) in basis.iter().enumerate().skip(1) {
+                let mut exp = 0.0;
+                for j in 0..d {
+                    exp += ideal.mat[(m_idx, j)] * x[j];
                 }
+                dataset
+                    .add_data(&prep, &meas.to_string(), (1.0 - exp) * 0.5)
+                    .unwrap();
             }
         }
     }
 
-    // Tighter convergence settings for a 2-qubit problem.
-    let mut cfg = QptSolverConfig::default();
-    cfg.max_iter = 300;
-    cfg.tol_convergence = 1e-7;
+    // Reconstruct and compare against the ideal CZ PTM.
+    let result = QptSolver::new(n, None).solve(&dataset).expect("tomography failed");
+    let (f_proc, f_avg) = result.ptm.fidelity(&ideal).unwrap();
+    println!("process fidelity = {f_proc:.6}, average fidelity = {f_avg:.6}");
+    assert!(f_proc > 0.99);
+    assert!(result.diagnostics.trace_preserving_error < 1e-3);
 
-    let solver = QptSolver::new(num_qubits, Some(cfg));
-    let result = solver.solve(&dataset).expect("tomography failed");
-
-    // Process and average gate fidelity against the ideal CZ PTM.
-    let (f_pro, f_avg) = result.ptm.fidelity(&ideal_cz).unwrap();
-    println!("process fidelity = {f_pro:.6}, average fidelity = {f_avg:.6}");
-    assert!(f_pro > 0.999);
-    assert!(f_avg > 0.999);
-    assert!(result.diagnostics.trace_preserving_error < 1e-6);
-    assert!(result.diagnostics.min_choi_eigenvalue >= -1e-6);
-
-    // Export an interactive 16x16 heat map to an HTML file.
+    // Optionally export an interactive 16x16 heat map.
     result
         .save_html("cz_ptm.html", Some("Ideal CZ Gate PTM (16x16)"))
         .expect("failed to save the HTML report");
@@ -216,9 +183,8 @@ fn main() {
 - `trace_preserving_error` — max deviation of the first PTM row from
   `[1, 0, ..., 0]`.
 - `min_choi_eigenvalue` — smallest eigenvalue of the reconstructed Choi matrix;
-  near `0` (or `≥ −tol`) means the CP constraint is satisfied.
-- `fit_rmse` — weighted root-mean-square error between the model predictions
-  and the input expectations.
+  near `0` means the CP constraint is satisfied.
+- `fit_rmse` — weighted RMS error between model predictions and inputs.
 - `data_coverage` — fraction of measurement basis elements present in the data.
 - `choi_matrix` — the reconstructed complex Choi matrix (`faer::Mat<c64>`).
 

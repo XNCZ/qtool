@@ -1,4 +1,4 @@
-//! # qtool — Quantum Process Tomography (QPT) toolkit
+//! # cz-qtool — Quantum Process Tomography (QPT) toolkit
 //!
 //! Pure-Rust (`faer` for linear algebra, `plotly` for plotting) quantum process
 //! tomography (QPT) for an arbitrary number of qubits under the completely positive
@@ -7,7 +7,7 @@
 //! Pauli transfer matrix (PTM).
 //!
 //! All public types live in the [`qpt`] module. Import them with
-//! `use qtool::qpt::*;` or `use qtool::qpt::{QptDataset, QptSolver, ...};`.
+//! `use cz_qtool::qpt::*;` or `use cz_qtool::qpt::{QptDataset, QptSolver, ...};`.
 //!
 //! # Crate layout
 //!

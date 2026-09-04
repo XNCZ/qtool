@@ -1,7 +1,5 @@
 use faer::{c64, Mat};
-use cz_qtool::qpt::{
-    PauliString, PtmMatrix, QptDataset, QptSolver, QptSolverConfig,
-};
+use cz_qtool::qpt::{PtmMatrix, QptDataset, QptSolver, QptSolverConfig};
 use rand::prelude::*;
 use std::f64::consts::PI;
 use std::time::Instant;
@@ -89,14 +87,6 @@ fn quantum_states(num_qubits: usize) -> Vec<String> {
     combinations
 }
 
-fn meas_strings(num_qubits: usize) -> Vec<String> {
-    let d = 1 << (2 * num_qubits);
-    // Cover all non-trivial measurement bases (indices 1 .. 4^n - 1)
-    (1..d)
-        .map(|idx| PauliString::from_index(num_qubits, idx).to_string())
-        .collect()
-}
-
 // =========================================================================
 // Single-round reconstruction verification
 // =========================================================================
@@ -109,26 +99,27 @@ fn test_single_round<R: Rng>(round_idx: usize, num_qubits: usize, rng: &mut R) -
     let dim = ideal_ptm.dim;
 
 
+    let basis = ideal_ptm.basis_order.clone();
     let prep_states = quantum_states(num_qubits);
-    let meas_strings = meas_strings(num_qubits);
     let mut dataset = QptDataset::new(num_qubits);
 
     for prep_str in &prep_states {
-        let prep_state = prep_str.parse::<cz_qtool::qpt::QuantumState>().unwrap();
-        let x = prep_state.pauli_vector();
+        let x = prep_str
+            .parse::<cz_qtool::qpt::QuantumState>()
+            .unwrap()
+            .pauli_vector();
 
-        for meas_str in &meas_strings {
-            let meas_pauli = meas_str.parse::<PauliString>().unwrap();
-            let m_idx = meas_pauli.index();
-
+        for (m_idx, meas_pauli) in basis.iter().enumerate().skip(1) {
             // Ideal expectation value <M> = sum_j R_{m, j} * x_j
             let mut exp_val = 0.0;
             for j in 0..dim {
-                exp_val += ideal_ptm.get_by_idx(m_idx, j) * x[j];
+                exp_val += ideal_ptm.mat[(m_idx, j)] * x[j];
             }
             // Excited-state probability p1 = (1 - <M>) / 2
             let p1 = ((1.0 - exp_val) * 0.5).clamp(0.0, 1.0);
-            dataset.add_data(prep_str, meas_str, p1).unwrap();
+            dataset
+                .add_data(prep_str, &meas_pauli.to_string(), p1)
+                .unwrap();
         }
     }
 
@@ -156,7 +147,7 @@ fn test_single_round<R: Rng>(round_idx: usize, num_qubits: usize, rng: &mut R) -
     let mut max_matrix_err = 0.0;
     for i in 0..dim {
         for j in 0..dim {
-            let err = (solve_res.ptm.get_by_idx(i, j) - ideal_ptm.get_by_idx(i, j)).abs();
+            let err = (solve_res.ptm.mat[(i, j)] - ideal_ptm.mat[(i, j)]).abs();
             if err > max_matrix_err {
                 max_matrix_err = err;
             }

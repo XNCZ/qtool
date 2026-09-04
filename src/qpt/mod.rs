@@ -78,7 +78,7 @@ pub enum SingleQubitState {
 
 impl SingleQubitState {
     #[inline]
-    pub fn pauli_vector(&self) -> [f64; 4] {
+    fn pauli_vector(&self) -> [f64; 4] {
         match self {
             Self::PlusZ => [1.0, 0.0, 0.0, 1.0],
             Self::MinusZ => [1.0, 0.0, 0.0, -1.0],
@@ -116,7 +116,7 @@ pub enum Pauli {
 }
 
 impl Pauli {
-    pub fn matrix(&self) -> [[c64; 2]; 2] {
+    fn matrix(&self) -> [[c64; 2]; 2] {
         let zero = c64::new(0.0, 0.0);
         let one = c64::new(1.0, 0.0);
         let i_unit = c64::new(0.0, 1.0);
@@ -145,10 +145,13 @@ impl TryFrom<char> for Pauli {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QuantumState {
-    pub qubits: Vec<SingleQubitState>,
+    qubits: Vec<SingleQubitState>,
 }
 
 impl QuantumState {
+    /// Return the expectation vector of the state in the Pauli basis,
+    /// i.e. `x[j] = <P_j>` where `P_j` runs over all `n`-qubit Pauli strings
+    /// in lexicographic order.
     pub fn pauli_vector(&self) -> Vec<f64> {
         let mut vec = vec![1.0];
         for q in &self.qubits {
@@ -206,12 +209,13 @@ impl FromStr for QuantumState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PauliString {
-    pub ops: Vec<Pauli>,
+    ops: Vec<Pauli>,
 }
 
 impl PauliString {
-    #[inline]
-    pub fn index(&self) -> usize {
+    /// Return the lexicographic integer index of this Pauli string in the
+    /// `{I, X, Y, Z}^{⊗n}` basis (internal bookkeeping).
+    fn index(&self) -> usize {
         let mut idx = 0;
         for op in &self.ops {
             idx = (idx << 2) | (*op as usize);
@@ -219,7 +223,8 @@ impl PauliString {
         idx
     }
 
-    pub fn from_index(num_qubits: usize, mut index: usize) -> Self {
+    /// Build a Pauli string from its lexicographic integer index.
+    fn from_index(num_qubits: usize, mut index: usize) -> Self {
         let mut ops = vec![Pauli::I; num_qubits];
         for k in (0..num_qubits).rev() {
             let val = index & 0b11;
@@ -285,11 +290,6 @@ impl QptDataPoint {
     #[inline]
     pub fn expectation(&self) -> f64 {
         1.0 - 2.0 * self.p1
-    }
-
-    #[inline]
-    pub fn p_plus(&self) -> f64 {
-        1.0 - self.p1
     }
 }
 
@@ -525,12 +525,8 @@ impl PtmMatrix {
         Ok(self.mat[(row_meas.index(), col_prep.index())])
     }
 
-    #[inline]
-    pub fn get_by_idx(&self, row: usize, col: usize) -> f64 {
-        self.mat[(row, col)]
-    }
-
-    pub fn to_choi(&self) -> Mat<c64> {
+    /// Convert the real PTM into its complex Choi-matrix representation.
+    fn to_choi(&self) -> Mat<c64> {
         let d = self.dim;
         let mut choi = Mat::<c64>::zeros(d, d);
         let norm = 1.0 / ((1 << self.num_qubits) as f64);
