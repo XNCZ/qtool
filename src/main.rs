@@ -1,4 +1,4 @@
-use cz_qtool::qpt::{PtmMatrix, QptDataset, QptSolverConfig};
+use qtool::qpt::{PtmMatrix, QptDataset, QptSolverConfig};
 
 fn main() {
     // Use qtool as a library: print the 1-qubit identity-gate PTM as a demo.

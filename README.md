@@ -1,9 +1,9 @@
-# cz-qtool
+# qtool
 
 Pure-Rust **quantum process tomography** (QPT) toolkit.
 
 Given the measurement statistics of an unknown quantum process acting on `n`
-qubits, `cz-qtool` performs maximum-likelihood reconstruction of the process
+qubits, `qtool` performs maximum-likelihood reconstruction of the process
 under the **completely positive and trace-preserving (CPTP)** constraint and
 returns its **Pauli transfer matrix (PTM)** `R`, where
 
@@ -42,7 +42,7 @@ There are **no C / Fortran / BLAS dependencies**.
 
 ```toml
 [dependencies]
-cz-qtool = "0.1"
+qtool = "0.1"
 
 # Add these only if you need them in your own code:
 faer = "0.24"   # build unitaries or inspect the returned matrices
@@ -54,7 +54,7 @@ plotly = "0.14" # drive the Plot objects returned by to_plotly yourself
 All public types live in the `qpt` module:
 
 ```rust
-use cz_qtool::qpt::*;
+use qtool::qpt::*;
 ```
 
 | Item | Purpose |
@@ -89,7 +89,7 @@ String conventions:
 ### Example 1 — one-qubit Pauli-X gate
 
 ```rust
-use cz_qtool::qpt::{QptDataset, QptSolver};
+use qtool::qpt::{QptDataset, QptSolver};
 
 fn main() {
     // |0> and |1> prepared and measured along Z:
@@ -128,7 +128,7 @@ The same recipe in `n = 2`: build the ideal `U_CZ = diag(1, 1, 1, −1)`,
 synthesize a complete experiment set from it, reconstruct, and check fidelity.
 
 ```rust
-use cz_qtool::qpt::{PtmMatrix, QptDataset, QptSolver, QuantumState};
+use qtool::qpt::{PtmMatrix, QptDataset, QptSolver, QuantumState};
 use faer::{c64, Mat};
 
 fn main() {

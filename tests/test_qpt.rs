@@ -1,5 +1,5 @@
 use faer::{c64, Mat};
-use cz_qtool::qpt::{PtmMatrix, QptDataset, QptSolver, QptSolverConfig};
+use qtool::qpt::{PtmMatrix, QptDataset, QptSolver, QptSolverConfig};
 use rand::prelude::*;
 use std::f64::consts::PI;
 use std::time::Instant;
@@ -105,7 +105,7 @@ fn test_single_round<R: Rng>(round_idx: usize, num_qubits: usize, rng: &mut R) -
 
     for prep_str in &prep_states {
         let x = prep_str
-            .parse::<cz_qtool::qpt::QuantumState>()
+            .parse::<qtool::qpt::QuantumState>()
             .unwrap()
             .pauli_vector();
 

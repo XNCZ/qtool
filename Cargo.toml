@@ -1,5 +1,5 @@
 [package]
-name = "cz-qtool"
+name = "qtool"
 version = "0.1.1"
 edition = "2024"
 authors = ["xncz <xncz@outlook.com>"]
