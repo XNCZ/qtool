@@ -17,4 +17,7 @@
 //! - [`qpt::QuantumState`], [`qpt::PauliString`], [`qpt::Pauli`], [`qpt::SingleQubitState`] —
 //!   states and operators.
 
-pub mod qpt;
+pub mod common;
+pub mod superconductor;
+pub use common::qpt;
+

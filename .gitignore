@@ -3,3 +3,5 @@
 *.html
 command.md
 CLAUDE.md
+.mcp.json
+/baseline
