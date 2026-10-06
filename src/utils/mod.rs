@@ -207,6 +207,8 @@ pub(crate) fn linear_detrend(x: &[f64], y: &[f64], slope: f64, intercept: f64) -
 #[cfg(feature = "plot")]
 pub(crate) mod heatmap;
 #[cfg(feature = "plot")]
+pub(crate) mod params;
+#[cfg(feature = "plot")]
 pub(crate) mod bubble;
 #[cfg(feature = "plot")]
 pub(crate) mod resize;

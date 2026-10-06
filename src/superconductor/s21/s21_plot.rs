@@ -13,6 +13,7 @@ use crate::utils::bubble::framize;
 use crate::utils::heatmap::{
     TITLE_COLOR, TITLE_SIZE, axis_style, escape_html, figure_font, interactive_config,
 };
+use crate::utils::params::{ParamRow, params_table};
 use crate::superconductor::s21::{
     Complex64, JAC_NAMES, S21Error, S21Model, background_at, model_at, notch_at,
 };
@@ -40,12 +41,6 @@ const STYLE: &str = r#"<style>
 .qtool-s21{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
 /* 高度跟着宽度走（比例即 DESIGN_WIDTH:DESIGN_HEIGHT；气泡里宽度正好是设计宽度 ⇒ 仍是设计高度） */
 .qtool-s21 .qtool-plot{width:100%;max-height:85vh}
-.qtool-s21 .qtool-params{border-collapse:collapse;width:100%;font-size:12px;margin-top:6px}
-.qtool-s21 .qtool-params th,.qtool-s21 .qtool-params td{border-bottom:1px solid #e5e7eb;padding:2px 8px;text-align:right;white-space:nowrap}
-.qtool-s21 .qtool-params th:first-child,.qtool-s21 .qtool-params td:first-child{text-align:left;font-family:ui-monospace,Consolas,monospace}
-.qtool-s21 .qtool-params th:nth-child(2),.qtool-s21 .qtool-params td:nth-child(2){text-align:left;width:100%;white-space:normal;color:#4b5563}
-.qtool-s21 .qtool-params th{color:#6b7280;font-weight:500}
-.qtool-s21 .qtool-note{margin-top:4px;font-size:12px;color:#b45309}
 .qtool-s21 .qtool-error{margin-top:6px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:13px}
 .qtool-s21 .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
 </style>"#;
@@ -265,14 +260,6 @@ impl DataView {
 // 拟合叠加层：成功/失败用同一接口回答"画什么曲线 / 表里写什么"
 // =========================================================================
 
-/// 参数表一行（值已格式化）。
-struct ParamRow {
-    name: &'static str,
-    description: &'static str,
-    value: String,
-    stderr: String,
-}
-
 /// 密集拟合曲线（数据点数的 [`DENSE_FACTOR`] 倍）。
 struct DenseCurves {
     freqs_hz: Vec<f64>,
@@ -290,7 +277,7 @@ enum FitOverlay<'a> {
         dense: Option<DenseCurves>,
         /// 归一化数据 `(iq − zc)/bg`。
         norm_data: Vec<Complex64>,
-        rows: Vec<ParamRow>,
+        rows: Vec<ParamRow<'a>>,
         note: Option<String>,
     },
     Absent {
@@ -334,26 +321,7 @@ impl FitOverlay<'_> {
 
     fn table_html(&self) -> String {
         match self {
-            FitOverlay::Some { rows, note, .. } => {
-                let mut html = String::from(
-                    "<table class=\"qtool-params\"><thead><tr><th>Parameter</th><th>Description</th><th>Value</th><th>stderr</th></tr></thead><tbody>",
-                );
-                for row in rows {
-                    html.push_str(&format!(
-                        "<tr><td>{}</td><td class=\"qtool-desc\">{}</td><td>{}</td><td>{}</td></tr>",
-                        row.name, row.description, row.value, row.stderr
-                    ));
-                }
-                html.push_str("</tbody></table>");
-                match note {
-                    Some(text) => html.push_str(&format!(
-                        "<div class=\"qtool-note\">⚠ {}</div>",
-                        escape_html(text)
-                    )),
-                    None => {}
-                }
-                html
-            }
+            FitOverlay::Some { rows, note, .. } => params_table(rows, note.as_deref()),
             FitOverlay::Absent { error } => format!(
                 "<div class=\"qtool-error\">Fit failed: {}</div>",
                 escape_html(&error.to_string())
@@ -364,7 +332,7 @@ impl FitOverlay<'_> {
 
 /// 由拟合结果构建叠加层；`Ok`/`Err` 只在这里分支一次。
 fn overlay<'a>(
-    fit: Result<&ComplexResult<S21Model>, &'a S21Error>,
+    fit: Result<&'a ComplexResult<S21Model>, &'a S21Error>,
     freqs_hz: &[f64],
     data: &DataView,
 ) -> FitOverlay<'a> {
@@ -445,7 +413,7 @@ fn dense_grid(freqs: &[f64]) -> Option<Vec<f64>> {
 }
 
 /// 参数表：11 个拟合参数 + 2 个派生量，值/stderr 按参数各自的单位格式化。
-fn param_rows(result: &ComplexResult<S21Model>) -> Vec<ParamRow> {
+fn param_rows(result: &ComplexResult<S21Model>) -> Vec<ParamRow<'static>> {
     let values = result.model.to_array();
     let mut rows: Vec<ParamRow> = JAC_NAMES
         .iter()
