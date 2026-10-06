@@ -5,15 +5,15 @@
 //! 生成 `<div>` 与 `Plotly.newPlot` 调用（[`plotly::Plot::to_inline_html`]）；宿主页面
 //! 需自行加载 plotly.js，可用 [`PLOTLY_JS_CDN`] 一行引入。
 //!
-//! 面板布局与配色对齐 baseline `s12_analysis.py::fit` 的四面板图；相位面板按索引做线性
-//! 去趋势，且数据与拟合曲线共用同一条趋势线（baseline 各自独立 detrend，两条曲线可能
-//! 整体错开；此处取同趋势以保证重合）。
+//! 面板布局与配色对齐 baseline `s12_analysis.py::fit` 的四面板图；相位面板以**频率**为
+//! 自变量做线性去趋势，且数据与拟合曲线共用同一条趋势线（baseline 各自独立 detrend，
+//! 两条曲线可能整体错开；此处取同趋势以保证重合）。
 
-use crate::utils::heatmap::{escape_html, interactive_config, styled_axis};
+use crate::utils::heatmap::{escape_html, interactive_config, axis_style};
 use crate::superconductor::s21::{
-    Complex64, JAC_NAMES, S12Error, S21Model, background_at, model_at, notch_at,
+    Complex64, JAC_NAMES, S21Error, S21Model, background_at, model_at, notch_at,
 };
-use crate::utils::{detrend, detrend_with_line, unwrap_phase};
+use crate::utils::{detrend, linear_detrend, unwrap_phase};
 use lmfit::ComplexResult;
 use plotly::Trace;
 use plotly::common::{Anchor, AxisSide, ErrorData, ErrorType, HoverInfo, Line, Marker, Mode};
@@ -48,7 +48,7 @@ const RESIDUAL_COLOR: &str = "#eab308";
 /// 形参:
 ///     freqs_hz: 读出频率数组 (n,)，Hz
 ///     iq: 该线的复数 IQ 数组 (n,)
-///     sigma: 逐点测量不确定度（与 `s12_fit` 同一口径）；给定时在 |S21| 面板画 σ、
+///     sigma: 逐点测量不确定度（与 `s21_fit` 同一口径）；给定时在 |S21| 面板画 σ、
 ///            在相位面板画 σ/|S21| 的 error bar。长度与 `iq` 不一致时忽略
 ///     fit: 拟合结果；`Ok` 画拟合曲线（`success == false` 时表内标注未收敛），
 ///          `Err` 只画数据点、表位置显示错误文本、归一化面板留空
@@ -57,11 +57,11 @@ const RESIDUAL_COLOR: &str = "#eab308";
 /// 返回值:
 ///     自包含的 `<div class="qtool-s21">` 片段（图 + 参数表 + 页脚）；
 ///     宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
-pub fn s21_fit_div(
+pub fn s21_fit_plot_div(
     freqs_hz: &[f64],
     iq: &[Complex64],
     sigma: Option<&[f64]>,
-    fit: Result<&ComplexResult<S21Model>, &S12Error>,
+    fit: Result<&ComplexResult<S21Model>, &S21Error>,
     div_id: &str,
 ) -> String {
     let data = DataView::new(freqs_hz, iq, sigma);
@@ -90,13 +90,13 @@ pub fn s21_fit_div(
 /// 拟合四面板的 Plotly 图对象（不含标题与参数表）。
 ///
 /// 供需要自行组装页面或懒渲染的调用方使用：[`plotly::Plot::to_inline_html`] 可产出
-/// 片段，[`s21_fit_div`] 即在此基础上加标题与参数表。
+/// 片段，[`s21_fit_plot_div`] 即在此基础上加标题与参数表。
 ///
 /// 形参:
 ///     freqs_hz: 读出频率数组 (n,)，Hz
 ///     iq: 该线的复数 IQ 数组 (n,)
-///     sigma: 逐点测量不确定度，同 [`s21_fit_div`]
-///     fit: 拟合结果，同 [`s21_fit_div`]
+///     sigma: 逐点测量不确定度，同 [`s21_fit_plot_div`]
+///     fit: 拟合结果，同 [`s21_fit_plot_div`]
 ///
 /// 返回值:
 ///     四面板（|S21|、相位、IQ、归一化圆）图对象
@@ -104,7 +104,7 @@ pub fn s21_fit_plot(
     freqs_hz: &[f64],
     iq: &[Complex64],
     sigma: Option<&[f64]>,
-    fit: Result<&ComplexResult<S21Model>, &S12Error>,
+    fit: Result<&ComplexResult<S21Model>, &S21Error>,
 ) -> Plot {
     let data = DataView::new(freqs_hz, iq, sigma);
     let overlay = overlay(fit, freqs_hz, &data);
@@ -259,7 +259,7 @@ enum FitOverlay<'a> {
         note: Option<String>,
     },
     Absent {
-        error: &'a S12Error,
+        error: &'a S21Error,
     },
 }
 
@@ -329,7 +329,7 @@ impl FitOverlay<'_> {
 
 /// 由拟合结果构建叠加层；`Ok`/`Err` 只在这里分支一次。
 fn overlay<'a>(
-    fit: Result<&ComplexResult<S21Model>, &'a S12Error>,
+    fit: Result<&ComplexResult<S21Model>, &'a S21Error>,
     freqs_hz: &[f64],
     data: &DataView,
 ) -> FitOverlay<'a> {
@@ -340,7 +340,7 @@ fn overlay<'a>(
                 freqs_hz.iter().map(|f| model_at(*f, params)).collect();
             let raw_phase: Vec<f64> = fit_on_data.iter().map(|z| z.arg()).collect();
             let fit_on_data_phase =
-                detrend_with_line(freqs_hz, &unwrap_phase(&raw_phase), data.phase_slope, data.phase_intercept);
+                linear_detrend(freqs_hz, &unwrap_phase(&raw_phase), data.phase_slope, data.phase_intercept);
 
             let dense = match dense_grid(freqs_hz) {
                 Some(dense_freqs) => {
@@ -350,7 +350,7 @@ fn overlay<'a>(
                         dense_freqs.iter().map(|f| notch_at(*f, params)).collect();
                     let raw: Vec<f64> = s21.iter().map(|z| z.arg()).collect();
                     let phase =
-                        detrend_with_line(&dense_freqs, &unwrap_phase(&raw), data.phase_slope, data.phase_intercept);
+                        linear_detrend(&dense_freqs, &unwrap_phase(&raw), data.phase_slope, data.phase_intercept);
                     Some(DenseCurves {
                         freqs_hz: dense_freqs.clone(),
                         s21,
@@ -763,36 +763,36 @@ fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
                 .y(1.0)
                 .y_anchor(Anchor::Bottom),
         )
-        .x_axis(styled_axis(
+        .x_axis(axis_style(
             Axis::new().domain(&[0.0, 0.40]).anchor("y").title(Panel::Magnitude.x_title()),
         ))
         .y_axis(at_range(
-            styled_axis(
+            axis_style(
                 Axis::new().domain(&[0.58, 1.0]).anchor("x").title(Panel::Magnitude.y_title()),
             ),
             magnitude_range,
         ))
-        .x_axis2(styled_axis(
+        .x_axis2(axis_style(
             Axis::new().domain(&[0.62, 1.0]).anchor("y2").title(Panel::Phase.x_title()),
         ))
         .y_axis2(at_range(
-            styled_axis(Axis::new().domain(&[0.58, 1.0]).anchor("x2").title(Panel::Phase.y_title())),
+            axis_style(Axis::new().domain(&[0.58, 1.0]).anchor("x2").title(Panel::Phase.y_title())),
             phase_range,
         ))
-        .x_axis3(styled_axis(
+        .x_axis3(axis_style(
             Axis::new().domain(&[0.0, 0.40]).anchor("y3").title(Panel::Iq.x_title()),
         ))
-        .y_axis3(styled_axis(
+        .y_axis3(axis_style(
             Axis::new()
                 .domain(&[0.0, 0.40])
                 .anchor("x3")
                 .title(Panel::Iq.y_title())
                 .scale_anchor("x3"),
         ))
-        .x_axis4(styled_axis(
+        .x_axis4(axis_style(
             Axis::new().domain(&[0.62, 1.0]).anchor("y4").title(Panel::Norm.x_title()),
         ))
-        .y_axis4(styled_axis(
+        .y_axis4(axis_style(
             Axis::new()
                 .domain(&[0.0, 0.40])
                 .anchor("x4")
@@ -801,7 +801,7 @@ fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
         ))
         // 残差叠加轴不画网格：否则与数据轴网格叠成双层虚线
         .y_axis5(at_range(
-            styled_axis(
+            axis_style(
                 Axis::new()
                     .overlaying("y")
                     .side(AxisSide::Right)
@@ -812,7 +812,7 @@ fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
             residual_axis_range(magnitude_range),
         ))
         .y_axis6(at_range(
-            styled_axis(
+            axis_style(
                 Axis::new()
                     .overlaying("y2")
                     .side(AxisSide::Right)
@@ -827,14 +827,14 @@ fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
         // 失败时第四面板只有那条 text trace：给 x4/y4 固定 range [0,1]，
         // 让"无拟合结果"落在面板正中且坐标框稳定。
         FitOverlay::Absent { .. } => layout
-            .x_axis4(styled_axis(
+            .x_axis4(axis_style(
                 Axis::new()
                     .domain(&[0.62, 1.0])
                     .anchor("y4")
                     .title(Panel::Norm.x_title())
                     .range(vec![0.0, 1.0]),
             ))
-            .y_axis4(styled_axis(
+            .y_axis4(axis_style(
                 Axis::new()
                     .domain(&[0.0, 0.40])
                     .anchor("x4")

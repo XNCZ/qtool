@@ -176,7 +176,7 @@ pub(crate) fn linear_fit(x: &[f64], y: &[f64]) -> (f64, f64) {
 }
 
 /// 线性去趋势（scipy `signal.detrend(type="linear")` 的口径），但自变量取**频率**而不是
-/// 索引 —— 系数因此带物理单位，也能直接套用到别的频率网格上（见 [`detrend_with_line`]）。
+/// 索引 —— 系数因此带物理单位，也能直接套用到别的频率网格上（见 [`linear_detrend`]）。
 ///
 /// 形参:
 ///     x: 自变量（频率），长度须与 `y` 一致
@@ -197,7 +197,7 @@ pub(crate) fn detrend(x: &[f64], y: &[f64]) -> (Vec<f64>, f64, f64) {
 /// 用**已知**的（频率域）直线去趋势：只套用、不重新拟合，所以可以直接用在另一条（更密
 /// 或更疏的）频率网格上。相位面板上数据点与拟合曲线必须共用同一条趋势线，否则残差会
 /// 整体倾斜 —— 那条线在数据网格上拟合一次（[`detrend`]），再用本函数套到拟合曲线上。
-pub(crate) fn detrend_with_line(x: &[f64], y: &[f64], slope: f64, intercept: f64) -> Vec<f64> {
+pub(crate) fn linear_detrend(x: &[f64], y: &[f64], slope: f64, intercept: f64) -> Vec<f64> {
     y.iter()
         .zip(x.iter())
         .map(|(value, at)| value - (slope * at + intercept))

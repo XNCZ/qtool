@@ -8,7 +8,7 @@
 //! 运行: cargo run --release --example s21_fit_bench
 
 use qtool::superconductor::s21::{
-    Complex64, JAC_NAMES, S21Model, jacobian, model_at, s12_fit,
+    Complex64, JAC_NAMES, S21Model, jacobian, model_at, s21_fit,
 };
 use std::hint::black_box;
 use std::time::Instant;
@@ -88,9 +88,9 @@ fn main() {
         jac_med / model_med
     );
 
-    println!("\n=== 全流程 s12_fit（无噪声，3 次重复） ===");
-    let (full_min, full_med) = repeat_ms(3, || s12_fit(&freqs, &noiseless, None));
-    match s12_fit(&freqs, &noiseless, None) {
+    println!("\n=== 全流程 s21_fit（无噪声，3 次重复） ===");
+    let (full_min, full_med) = repeat_ms(3, || s21_fit(&freqs, &noiseless, None));
+    match s21_fit(&freqs, &noiseless, None) {
         Ok(result) => {
             println!(
                 "time: min {full_min:.3} ms / median {full_med:.3} ms | nfev(最优候选)={} chisqr={:.6e} residual(=chisqr/n)={:.6e}",
@@ -100,12 +100,12 @@ fn main() {
             );
             print_params(&result.model);
         }
-        Err(err) => println!("s12_fit 失败：{err}"),
+        Err(err) => println!("s21_fit 失败：{err}"),
     }
 
-    println!("\n=== 全流程 s12_fit（带噪声：无权重 vs 常数 sigma，各 3 次重复） ===");
-    let (nw_min, nw_med) = repeat_ms(3, || s12_fit(&freqs, &noisy, None));
-    match s12_fit(&freqs, &noisy, None) {
+    println!("\n=== 全流程 s21_fit（带噪声：无权重 vs 常数 sigma，各 3 次重复） ===");
+    let (nw_min, nw_med) = repeat_ms(3, || s21_fit(&freqs, &noisy, None));
+    match s21_fit(&freqs, &noisy, None) {
         Ok(result) => {
             println!(
                 "无权重: time min {nw_min:.3} ms / median {nw_med:.3} ms | chisqr={:.6e}",
@@ -116,8 +116,8 @@ fn main() {
         Err(err) => println!("无权重拟合失败：{err}"),
     }
     let sigma = vec![2e-3_f64; freqs.len()];
-    let (w_min, w_med) = repeat_ms(3, || s12_fit(&freqs, &noisy, Some(&sigma)));
-    match s12_fit(&freqs, &noisy, Some(&sigma)) {
+    let (w_min, w_med) = repeat_ms(3, || s21_fit(&freqs, &noisy, Some(&sigma)));
+    match s21_fit(&freqs, &noisy, Some(&sigma)) {
         Ok(result) => {
             println!(
                 "常数 sigma=2e-3: time min {w_min:.3} ms / median {w_med:.3} ms | 加权 chisqr={:.6e}",

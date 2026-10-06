@@ -1,10 +1,10 @@
-//! 批量 S12 拟合基准：3000 条不同频率线的全流程拟合（初值估计 + 候选扫描），
+//! 批量 S21 拟合基准：3000 条不同频率线的全流程拟合（初值估计 + 候选扫描），
 //! 串行与 rayon 并行对照。Python 侧脚本用同一 LCG 生成同样的 3000 个问题
 //! （见 /tmp 的 bench_batch.py），但其 lmfit 受 GIL 约束只能串行。
 //!
 //! 运行: cargo run --release --example s12_batch_bench
 
-use qtool::superconductor::s21::{Complex64, S21Model, model_at, s12_fit, s12_fit_batch};
+use qtool::superconductor::s21::{Complex64, S21Model, model_at, s21_fit, s21_fit_batch};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -76,7 +76,7 @@ fn main() {
     let start = Instant::now();
     let mut serial_failures = 0_usize;
     for line in lines.iter() {
-        match s12_fit(&freqs, line, None) {
+        match s21_fit(&freqs, line, None) {
             Ok(result) => {
                 black_box(result.chisqr);
             }
@@ -87,7 +87,7 @@ fn main() {
 
     // rayon 并行
     let start = Instant::now();
-    let results = s12_fit_batch(&freqs, &lines, None);
+    let results = s21_fit_batch(&freqs, &lines, None);
     let parallel_ms = start.elapsed().as_secs_f64() * 1e3;
     let parallel_failures = results
         .iter()

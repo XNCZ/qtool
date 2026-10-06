@@ -5,12 +5,12 @@
 //! - **散粒（泊松型）**：把 |S21| 视作强度 ∝ 计数，σ_i ∝ √|S21_i|——
 //!   即计数服从泊松分布的复数据体现：峰值处相对噪声 1/√N，notch 底部最脏。
 //!
-//! 统计口径：成功率（s12_fit 返回 Ok 的比例）与各参数的相对误差中位数；
+//! 统计口径：成功率（s21_fit 返回 Ok 的比例）与各参数的相对误差中位数；
 //! θ 按模 π、φ 按模 2π 的等价分支折算。
 //!
 //! 运行: cargo run --release --example s21_noise_scan
 
-use qtool::superconductor::s21::{Complex64, S21Model, model_at, s12_fit};
+use qtool::superconductor::s21::{Complex64, S21Model, model_at, s21_fit};
 use std::f64::consts::PI;
 
 /// 确定性 LCG + Box-Muller，保证每次运行结果可复现。
@@ -126,7 +126,7 @@ fn scan(
                     z + Complex64::new(sigma * rng.next_normal(), sigma * rng.next_normal())
                 })
                 .collect();
-            match s12_fit(freqs, &noisy, None) {
+            match s21_fit(freqs, &noisy, None) {
                 Ok(result) => {
                     successes += 1;
                     let fitted = result.model.to_array();

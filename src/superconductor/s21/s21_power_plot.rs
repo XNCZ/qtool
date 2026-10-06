@@ -1,17 +1,17 @@
 //! S21 功率扫描的二维报告（feature = "plot"）：两张并排热图 + 行面板交互。
 //!
 //! - 热图一：颜色 = |S21|；热图二：颜色 = unwrap + detrend 后的相位（与
-//!   [`superconductor::s21_plot`](crate::superconductor::s21_plot) 的相位面板同口径）；
+//!   [`s21_plot`](crate::superconductor::s21::s21_plot) 的相位面板同口径）；
 //! - 两张热图都由 [`crate::utils::heatmap::heatmap`] 生成（点击取
 //!   该点的 row / col 到右、下边线图，带 continuous error bar）；
 //! - **hover 到某一行** → 跟随光标的对话气泡显示该功率的 S21 四面板（首次使用时才渲染）；
 //! - **double click** → 把气泡**原地**钉成固定浮层（位置不再跟走、移开鼠标也不消失；
 //!   可多个、按行去重、允许重叠），每个浮层带 × 关闭；
 //! - 产物是自包含 div，宿主页面需提供 plotly.js（见
-//!   [`superconductor::s21_plot::PLOTLY_JS_CDN`](crate::superconductor::s21_plot::PLOTLY_JS_CDN)）。
+//!   [`s21_plot::PLOTLY_JS_CDN`](crate::superconductor::s21::s21_plot::PLOTLY_JS_CDN)）。
 
-use crate::superconductor::s21::{Complex64, S12Error, S21Model};
-use crate::superconductor::s21_plot::s21_fit_div;
+use crate::superconductor::s21::{Complex64, S21Error, S21Model};
+use crate::superconductor::s21::s21_plot::s21_fit_plot_div;
 use crate::utils::bubble::{Bubble, CARD_STYLE, bubble, card_title};
 use crate::utils::heatmap::{Grid2d, Palette, heatmap};
 use crate::utils::{detrend, unwrap_phase};
@@ -22,7 +22,7 @@ pub struct PowerLine<'a> {
     pub power: f64,
     pub iq: &'a [Complex64],
     pub sigma: Option<&'a [f64]>,
-    pub fit: Result<&'a ComplexResult<S21Model>, &'a S12Error>,
+    pub fit: Result<&'a ComplexResult<S21Model>, &'a S21Error>,
 }
 
 /// 渲染功率扫描报告 div。
@@ -35,7 +35,7 @@ pub struct PowerLine<'a> {
 /// 返回值:
 ///     自包含的 `<div class="qtool-power">` 片段（两张热图 + 跟随光标的行面板气泡
 ///     + 可钉住的浮层）。行标签由 `PowerLine::power` 派生。
-pub fn s21_power_div(freqs_hz: &[f64], lines: &[PowerLine<'_>], div_id: &str) -> String {
+pub fn s21_power_plot_div(freqs_hz: &[f64], lines: &[PowerLine<'_>], div_id: &str) -> String {
     // 频率轴直接用 SI 基本单位 Hz（与数据、与 s21_plot 的面板一致）
     let powers: Vec<f64> = lines.iter().map(|line| line.power).collect();
 
@@ -97,13 +97,13 @@ pub fn s21_power_div(freqs_hz: &[f64], lines: &[PowerLine<'_>], div_id: &str) ->
         &format!("{div_id}-phase"),
     );
 
-    // 每个功率行的面板（[`s21_fit_div`] 的四面板图 + 参数表，含自身样式）嵌在
+    // 每个功率行的面板（[`s21_fit_plot_div`] 的四面板图 + 参数表，含自身样式）嵌在
     // <template> 里惰性实例化；`{div_id}-panel{row}` 是这一行的 id 前缀，前端挂载时
     // 会整体改写成该实例专属的 id（同一行可能同时挂在气泡与浮层上，id 不能重复）。
     let mut templates = String::new();
     for (row, line) in lines.iter().enumerate() {
         let panel_base = format!("{div_id}-panel{row}");
-        let panel_html = s21_fit_div(freqs_hz, line.iq, line.sigma, line.fit, &panel_base);
+        let panel_html = s21_fit_plot_div(freqs_hz, line.iq, line.sigma, line.fit, &panel_base);
         templates.push_str(&format!(
             "<template id=\"{div_id}-tpl-{row}\"><div class=\"qtool-panel\">{panel_html}</div></template>\n"
         ));

@@ -16,7 +16,7 @@
 //! `∂y/∂p = −(∂F/∂p)/(∂F/∂y)`，其中 `∂F/∂y = 1 + 8·ap·y/(1+4y²)²`；y 复用
 //! 求根结果，导数不需要再次求根。
 //!
-//! 拟合入口 [`s12_fit`] 复刻 baseline 的 `s12_fit`：由 estimate 从数据读出
+//! 拟合入口 [`s21_fit`] 复刻 baseline 的 `s12_fit`：由 estimate 从数据读出
 //! 初值候选，逐候选执行 fit_once，取残差最小者。`estimate` 与 baseline 有一处
 //! 有意差异：notch 的 θ 改由代数圆拟合的几何唯一确定（见 estimate 的文档），
 //! 其余估计量与 baseline 一致。`qi` 与 `kappa_ex` 是派生量，经 `#[param(derive)]`
@@ -522,7 +522,7 @@ fn solve3(matrix: [[f64; 3]; 3], rhs: [f64; 3]) -> Option<[f64; 3]> {
 
 /// S21 拟合的错误类型。
 #[derive(Debug, Clone, PartialEq)]
-pub enum S12Error {
+pub enum S21Error {
     /// 频率或 IQ 数据为空。
     EmptyData,
     /// 频率点数与 IQ 点数不一致。
@@ -537,7 +537,7 @@ pub enum S12Error {
     Lmfit(lmfit::Error),
 }
 
-impl std::fmt::Display for S12Error {
+impl std::fmt::Display for S21Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EmptyData => write!(f, "the frequency or IQ data is empty; cannot run the fit"),
@@ -557,7 +557,7 @@ impl std::fmt::Display for S12Error {
     }
 }
 
-impl std::error::Error for S12Error {}
+impl std::error::Error for S21Error {}
 
 /// 以给定初值执行一次 S21 拟合。
 ///
@@ -575,12 +575,12 @@ pub(crate) fn fit_once(
     iq: &[Complex64],
     p0: &[f64; 11],
     sigma: Option<&[f64]>,
-) -> Result<ComplexResult<S21Model>, S12Error> {
+) -> Result<ComplexResult<S21Model>, S21Error> {
     if freqs_hz.is_empty() || iq.is_empty() {
-        return Err(S12Error::EmptyData);
+        return Err(S21Error::EmptyData);
     }
     if freqs_hz.len() != iq.len() {
-        return Err(S12Error::LengthMismatch {
+        return Err(S21Error::LengthMismatch {
             freqs: freqs_hz.len(),
             iq: iq.len(),
         });
@@ -592,7 +592,7 @@ pub(crate) fn fit_once(
     };
     match outcome {
         Ok(result) => Ok(result),
-        Err(err) => Err(S12Error::Lmfit(err)),
+        Err(err) => Err(S21Error::Lmfit(err)),
     }
 }
 
@@ -609,23 +609,23 @@ pub(crate) fn fit_once(
 ///
 /// 返回值:
 ///     残差最小的拟合结果；无候选或全部失败时返回错误
-pub fn s12_fit(
+pub fn s21_fit(
     freqs_hz: &[f64],
     iq: &[Complex64],
     sigma: Option<&[f64]>,
-) -> Result<ComplexResult<S21Model>, S12Error> {
+) -> Result<ComplexResult<S21Model>, S21Error> {
     if freqs_hz.is_empty() || iq.is_empty() {
-        return Err(S12Error::EmptyData);
+        return Err(S21Error::EmptyData);
     }
     if freqs_hz.len() != iq.len() {
-        return Err(S12Error::LengthMismatch {
+        return Err(S21Error::LengthMismatch {
             freqs: freqs_hz.len(),
             iq: iq.len(),
         });
     }
     let candidates = estimate(freqs_hz, iq);
     if candidates.is_empty() {
-        return Err(S12Error::NoCandidates);
+        return Err(S21Error::NoCandidates);
     }
     let mut best: Option<ComplexResult<S21Model>> = None;
     for p0 in candidates {
@@ -640,17 +640,17 @@ pub fn s12_fit(
                 }
             }
             // 单候选失败是预期情形，继续扫描其余候选
-            Err(S12Error::Lmfit(..)) => {}
+            Err(S21Error::Lmfit(..)) => {}
             Err(other) => return Err(other),
         }
     }
     match best {
         Some(result) => Ok(result),
-        None => Err(S12Error::AllFitsUnsuccess),
+        None => Err(S21Error::AllFitsUnsuccess),
     }
 }
 
-/// 批量 S21 拟合：对多条频率线并行执行 [`s12_fit`]，结果按输入顺序返回。
+/// 批量 S21 拟合：对多条频率线并行执行 [`s21_fit`]，结果按输入顺序返回。
 ///
 /// 每条线互不依赖，rayon 按当前线程池并行；单线失败不影响其余线。
 ///
@@ -662,19 +662,19 @@ pub fn s12_fit(
 ///
 /// 返回值:
 ///     与 `iq_lines` 等长的结果列表，逐线对应；`sigmas` 缺少对应份的线返回
-///     [`S12Error::BatchSigmaMismatch`]
-pub fn s12_fit_batch(
+///     [`S21Error::BatchSigmaMismatch`]
+pub fn s21_fit_batch(
     freqs_hz: &[f64],
     iq_lines: &[Vec<Complex64>],
     sigmas: Option<&[Vec<f64>]>,
-) -> Vec<Result<ComplexResult<S21Model>, S12Error>> {
+) -> Vec<Result<ComplexResult<S21Model>, S21Error>> {
     match sigmas {
         Some(list) => iq_lines
             .par_iter()
             .enumerate()
             .map(|(index, line)| match list.get(index) {
-                Some(sigma) => s12_fit(freqs_hz, line, Some(sigma)),
-                None => Err(S12Error::BatchSigmaMismatch {
+                Some(sigma) => s21_fit(freqs_hz, line, Some(sigma)),
+                None => Err(S21Error::BatchSigmaMismatch {
                     lines: iq_lines.len(),
                     sigmas: list.len(),
                 }),
@@ -682,7 +682,7 @@ pub fn s12_fit_batch(
             .collect(),
         None => iq_lines
             .par_iter()
-            .map(|line| s12_fit(freqs_hz, line, None))
+            .map(|line| s21_fit(freqs_hz, line, None))
             .collect(),
     }
 }
@@ -986,14 +986,14 @@ mod tests {
     /// 错误盆地（残差 2.59e17），圆几何定 θ 后候选直达最优。θ 与 Qc 存在
     /// (θ+π, Qc) 的等价分支，比较时按模 π 处理。
     #[test]
-    fn s12_fit_recovers_noiseless_model() {
+    fn s21_fit_recovers_noiseless_model() {
         let truth = sample_params();
         let freqs: Vec<f64> = (0..51)
             .map(|i| 6.8982e9 - 5e6 + 10e6 * i as f64 / 50.0)
             .collect();
         let iq: Vec<Complex64> = freqs.iter().map(|f| model_at(*f, &truth)).collect();
 
-        let result = match s12_fit(&freqs, &iq, None) {
+        let result = match s21_fit(&freqs, &iq, None) {
             Ok(result) => result,
             Err(err) => panic!("全流程拟合失败：{err}"),
         };
