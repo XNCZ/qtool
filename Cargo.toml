@@ -12,12 +12,20 @@ categories = ["mathematics", "science", "algorithms"]
 
 [lib]
 
+[features]
+default = ["plot"]
+plot = ["dep:plotly"]
+
 [dependencies]
 faer = "0.24.4"
 lmfit = "0.4"
-plotly = "0.14.1"
+plotly = { version = "0.14.1", optional = true }
 rayon = "1.12.0"
 roots = "0.0.8"
 
 [dev-dependencies]
 rand = "0.10.2"
+
+[[example]]
+name = "s21_plot_demo"
+required-features = ["plot"]

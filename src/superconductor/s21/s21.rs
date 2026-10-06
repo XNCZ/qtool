@@ -206,15 +206,35 @@ pub(crate) fn solve_detuning_y(y0: f64, ap: f64) -> f64 {
 /// 返回值:
 ///     该频率处的复数 S21
 pub fn model_at(f: f64, p: &S21Model) -> Complex64 {
+    Complex64::new(p.zc_re, p.zc_im) + background_at(f, p) * notch_at(f, p)
+}
+
+/// notch 因子 `1 − (Ql/Qc·e^{jθ})/((1+2j·y)·cosθ)`，不含背景与常数偏置。
+///
+/// 形参:
+///     f: 读出频率，Hz
+///     p: 模型参数
+///
+/// 返回值:
+///     该频率处的 notch 因子
+pub(crate) fn notch_at(f: f64, p: &S21Model) -> Complex64 {
     let y = solve_detuning_y(p.ql * (f - p.fr) / p.fr, p.ap);
     let cos_t = p.theta.cos();
     let kappa = Complex64::from_polar(p.ql / p.qc / cos_t, p.theta);
-    let res = Complex64::new(1.0, 0.0) - kappa / Complex64::new(1.0, 2.0 * y);
+    Complex64::new(1.0, 0.0) - kappa / Complex64::new(1.0, 2.0 * y)
+}
 
+/// 驻波背景因子 `(A·cos(2πfτ) − j·B·sin(2πfτ))·e^{−jφ}`，不含常数偏置。
+///
+/// 形参:
+///     f: 读出频率，Hz
+///     p: 模型参数
+///
+/// 返回值:
+///     该频率处的背景因子
+pub(crate) fn background_at(f: f64, p: &S21Model) -> Complex64 {
     let arg = 2.0 * PI * f * p.tau;
-    let bg = (p.a * arg.cos() - Complex64::i() * p.b * arg.sin())
-        * Complex64::from_polar(1.0, -p.phi);
-    Complex64::new(p.zc_re, p.zc_im) + bg * res
+    (p.a * arg.cos() - Complex64::i() * p.b * arg.sin()) * Complex64::from_polar(1.0, -p.phi)
 }
 
 /// 在单个频点上求模型对 11 个参数的解析偏导。
@@ -520,16 +540,19 @@ pub enum S12Error {
 impl std::fmt::Display for S12Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EmptyData => write!(f, "频率或 IQ 数据为空，无法执行拟合"),
+            Self::EmptyData => write!(f, "the frequency or IQ data is empty; cannot run the fit"),
             Self::LengthMismatch { freqs, iq } => {
-                write!(f, "频率点数 {freqs} 与 IQ 点数 {iq} 不一致")
+                write!(f, "frequency points ({freqs}) and IQ points ({iq}) have different lengths")
             }
-            Self::NoCandidates => write!(f, "初值候选为空，无从拟合"),
-            Self::BatchSigmaMismatch { lines, sigmas } => {
-                write!(f, "逐线 sigma 的份数 {sigmas} 与频率线数量 {lines} 不一致")
+            Self::NoCandidates => {
+                write!(f, "initial-value estimation produced no candidate; nothing to fit")
             }
-            Self::AllFitsUnsuccess => write!(f, "全部初值候选的拟合均未成功"),
-            Self::Lmfit(err) => write!(f, "lmfit 拟合失败：{err}"),
+            Self::BatchSigmaMismatch { lines, sigmas } => write!(
+                f,
+                "per-line sigma count ({sigmas}) does not match the number of frequency lines ({lines})"
+            ),
+            Self::AllFitsUnsuccess => write!(f, "all initial-value candidates failed to fit"),
+            Self::Lmfit(err) => write!(f, "lmfit failed: {err}"),
         }
     }
 }

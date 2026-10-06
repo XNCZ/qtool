@@ -14,12 +14,16 @@
 
 use faer::linalg::solvers::SelfAdjointEigen;
 use faer::{c64, Mat, Side};
-use plotly::common::{ColorScale, ColorScalePalette};
-use plotly::layout::{Axis, Layout, TicksDirection};
-use plotly::{HeatMap, Plot};
+#[cfg(feature = "plot")]
+use plotly::{
+    HeatMap, Plot,
+    common::{ColorScale, ColorScalePalette},
+    layout::{Axis, Layout, TicksDirection},
+};
 use rayon::prelude::*;
 use std::error::Error;
 use std::fmt;
+#[cfg(feature = "plot")]
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Instant;
@@ -600,6 +604,11 @@ impl PtmMatrix {
         out
     }
 
+}
+
+/// PTM 的图形渲染（feature = "plot"）。
+#[cfg(feature = "plot")]
+impl PtmMatrix {
     /// Build an interactive 2-D heat map of the PTM as a Plotly [`Plot`].
     ///
     /// # Features
@@ -695,6 +704,11 @@ pub struct QptResult {
     pub meta: QptSolverMeta,
 }
 
+impl QptResult {
+}
+
+/// QPT 结果的图形渲染（feature = "plot"）。
+#[cfg(feature = "plot")]
 impl QptResult {
     /// Convenience wrapper that plots the tomography result directly; the title
     /// automatically carries the process fidelity and RMSE diagnostics.

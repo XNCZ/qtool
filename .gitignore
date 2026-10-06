@@ -1,7 +1,11 @@
 /target
 .idea
-*.html
+/plt
 command.md
 CLAUDE.md
 .mcp.json
 /baseline
+/data
+.claude
+.playwright-mcp
+examples

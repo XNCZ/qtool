@@ -174,3 +174,39 @@ pub(crate) fn linear_fit(x: &[f64], y: &[f64]) -> (f64, f64) {
     let slope = sxy / sxx;
     (slope, y_mean - slope * x_mean)
 }
+
+/// 线性去趋势（scipy `signal.detrend(type="linear")` 的口径），但自变量取**频率**而不是
+/// 索引 —— 系数因此带物理单位，也能直接套用到别的频率网格上（见 [`detrend_with_line`]）。
+///
+/// 形参:
+///     x: 自变量（频率），长度须与 `y` 一致
+///     y: 待去趋势的序列
+///
+/// 返回值:
+///     (去趋势后的序列, 斜率, 截距)；后两者即频率域那条直线 `slope * x + intercept`
+pub(crate) fn detrend(x: &[f64], y: &[f64]) -> (Vec<f64>, f64, f64) {
+    let (slope, intercept) = linear_fit(x, y);
+    let detrended = y
+        .iter()
+        .zip(x.iter())
+        .map(|(value, at)| value - (slope * at + intercept))
+        .collect();
+    (detrended, slope, intercept)
+}
+
+/// 用**已知**的（频率域）直线去趋势：只套用、不重新拟合，所以可以直接用在另一条（更密
+/// 或更疏的）频率网格上。相位面板上数据点与拟合曲线必须共用同一条趋势线，否则残差会
+/// 整体倾斜 —— 那条线在数据网格上拟合一次（[`detrend`]），再用本函数套到拟合曲线上。
+pub(crate) fn detrend_with_line(x: &[f64], y: &[f64], slope: f64, intercept: f64) -> Vec<f64> {
+    y.iter()
+        .zip(x.iter())
+        .map(|(value, at)| value - (slope * at + intercept))
+        .collect()
+}
+
+#[cfg(feature = "plot")]
+pub(crate) mod heatmap;
+#[cfg(feature = "plot")]
+pub(crate) mod bubble;
+#[cfg(feature = "plot")]
+pub(crate) mod resize;

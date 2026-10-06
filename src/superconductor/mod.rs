@@ -3,3 +3,9 @@
 //! 目前包含 S21 谐振腔模型及其拟合流程（[`s21`]）。
 
 pub mod s21;
+
+#[cfg(feature = "plot")]
+pub mod s21_plot;
+
+#[cfg(feature = "plot")]
+pub mod s21_power_plot;
