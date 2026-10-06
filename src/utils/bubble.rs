@@ -40,9 +40,12 @@ pub(crate) fn bubble(spec: &Bubble<'_>) -> String {
     let json_triggers = json_strings(spec.triggers);
     let panel_width = spec.panel_width;
     let scale = spec.scale;
+    // 面板的布局宽度必须与 JS 里的 PANEL_W 是同一个值（气泡按它原样布局、再整体缩放），
+    // 所以由这里插值生成；CSS 里不再写第二份。
+    let panel_css = format!(".qtool-src,.qtool-panel{{width:{panel_width}px}}");
 
     format!(
-        r##"<style>{CARD_STYLE}</style>{STYLE}
+        r##"<style>{CARD_STYLE}</style>{STYLE}<style>{panel_css}</style>
 <div class="qtool-card qtool-bubble" id="{div_id}-bubble">
 <div class="qtool-bubble-head"><span class="qtool-card-label" id="{div_id}-bubble-title"></span><span class="qtool-card-tools"><button type="button" class="qtool-card-btn" id="{div_id}-bubble-max" title="maximize"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button><button type="button" class="qtool-card-btn qtool-card-btn-close" id="{div_id}-bubble-close" title="close">×</button></span></div>
 <div class="qtool-bubble-body" id="{div_id}-bubble-body"></div></div>
@@ -61,6 +64,12 @@ pub(crate) fn bubble(spec: &Bubble<'_>) -> String {
   var pinned = {{}};
   var bubbleRow = -1, bubbleW = 0, bubbleH = 0, liveSeq = 0;
   var SCALE = {scale}, PANEL_W = {panel_width};
+  // 交互参数：改手感只动这里
+  var MAX_FIT = 0.9;         // 最大化后卡片占视口的比例（宽高两方向取更紧的那个）
+  var CURSOR_DX = 16;        // 气泡相对光标的水平偏移，px
+  var CURSOR_ANCHOR = 0.3;   // 气泡纵向定位：光标落在气泡自身高度的这个比例处
+  var EDGE_GAP = 8;          // 气泡/卡片离视口边缘的最小留白，px
+  var DOUBLE_CLICK_MS = 400; // 双击（钉住）的判定窗口，ms
 
   var rowFromEvent = function (ev) {{
     var points = (ev && ev.points) || [];
@@ -128,18 +137,18 @@ pub(crate) fn bubble(spec: &Bubble<'_>) -> String {
     card.__qtoolPreScale = body.__qtoolScale || SCALE;
     card.__qtoolPreLeft = card.style.left;
     card.__qtoolPreTop = card.style.top;
-    // 放大到视口的 0.9（两个方向取更紧的那个），按卡片*当前*尺寸等比换算 ——
+    // 放大到视口的 MAX_FIT（两个方向取更紧的那个），按卡片*当前*尺寸等比换算 ——
     // 标题行、内边距、边框都算在内，不会出现面板塞下了、卡片却超出屏幕。
-    // 参照物用视口而不是图组卡：图组是"宽而矮"的图，0.9×它的高度比卡片本来就小，
+    // 参照物用视口而不是图组卡：图组是"宽而矮"的图，MAX_FIT×它的高度比卡片本来就小，
     // 拿它当上限会让"最大化"变成缩小。
     var fit = Math.min(
-      0.9 * window.innerWidth / card.offsetWidth,
-      0.9 * window.innerHeight / card.offsetHeight
+      MAX_FIT * window.innerWidth / card.offsetWidth,
+      MAX_FIT * window.innerHeight / card.offsetHeight
     );
     card.__qtoolMax = true;
     scaleInto(body, inner, Math.max(SCALE, (body.__qtoolScale || SCALE) * fit));
-    card.style.left = Math.max(8, Math.round((window.innerWidth - card.offsetWidth) / 2)) + "px";
-    card.style.top = Math.max(8, Math.round((window.innerHeight - card.offsetHeight) / 2)) + "px";
+    card.style.left = Math.max(EDGE_GAP, Math.round((window.innerWidth - card.offsetWidth) / 2)) + "px";
+    card.style.top = Math.max(EDGE_GAP, Math.round((window.innerHeight - card.offsetHeight) / 2)) + "px";
     if (btn) {{ btn.classList.add("is-max"); }}
   }};
 
@@ -190,15 +199,15 @@ pub(crate) fn bubble(spec: &Bubble<'_>) -> String {
   var placeBubble = function (mouse) {{
     if (!mouse) {{ return; }}
     var x = mouse.clientX, y = mouse.clientY;
-    var left = x + 16;
-    if (left + bubbleW > window.innerWidth - 8) {{
-      left = x - 16 - bubbleW;
+    var left = x + CURSOR_DX;
+    if (left + bubbleW > window.innerWidth - EDGE_GAP) {{
+      left = x - CURSOR_DX - bubbleW;
     }}
-    if (left < 8) {{ left = 8; }}
-    var top = y - Math.round(bubbleH * 0.3);
-    if (top < 8) {{ top = 8; }}
-    if (top + bubbleH > window.innerHeight - 8) {{ top = window.innerHeight - 8 - bubbleH; }}
-    if (top < 8) {{ top = 8; }}
+    if (left < EDGE_GAP) {{ left = EDGE_GAP; }}
+    var top = y - Math.round(bubbleH * CURSOR_ANCHOR);
+    if (top < EDGE_GAP) {{ top = EDGE_GAP; }}
+    if (top + bubbleH > window.innerHeight - EDGE_GAP) {{ top = window.innerHeight - EDGE_GAP - bubbleH; }}
+    if (top < EDGE_GAP) {{ top = EDGE_GAP; }}
     bubble.style.left = left + "px";
     bubble.style.top = top + "px";
   }};
@@ -313,11 +322,11 @@ pub(crate) fn bubble(spec: &Bubble<'_>) -> String {
     }});
     gd.addEventListener("mouseleave", scheduleHide);
     // plotly_dblclick 实测不派发（被 autoscale 动作吞掉），改从 click 事件识别双击：
-    // 同一行、400 ms 内两次 click 即 pin 该行。
+    // 同一行、DOUBLE_CLICK_MS 内两次 click 即 pin 该行。
     gd.on("plotly_click", function (ev) {{
       var row = rowFromEvent(ev);
       var now = Date.now();
-      if (row >= 0 && row === lastClick.row && now - lastClick.time < 400) {{
+      if (row >= 0 && row === lastClick.row && now - lastClick.time < DOUBLE_CLICK_MS) {{
         pin(row);
         lastClick = {{ row: -1, time: 0 }};
         return;
@@ -366,5 +375,4 @@ const STYLE: &str = r#"<style>
 /* 气泡整体不吃鼠标（否则会挡住热图的 hover），只有工具栏例外 */
 .qtool-card.qtool-bubble .qtool-card-tools{pointer-events:auto}
 .qtool-src{position:absolute;left:-20000px;top:0;visibility:hidden}
-.qtool-src,.qtool-panel{width:1000px}
 </style>"#;

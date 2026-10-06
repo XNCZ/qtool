@@ -24,11 +24,19 @@ use plotly::{Plot, Scatter};
 pub const PLOTLY_JS_CDN: &str =
     r#"<script src="https://cdn.plot.ly/plotly-3.0.1.min.js" charset="utf-8"></script>"#;
 
-/// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）。
+/// 四面板报告的设计宽度（px）。气泡/浮层按这个宽度**原样布局**再整体 `transform: scale`
+/// 缩放，所以它同时是 `s21_power_plot` 里面板宽度的来源，也定下 `.qtool-plot` 的高宽比。
+pub(crate) const DESIGN_WIDTH: f64 = 1000.0;
+
+/// 与 [`DESIGN_WIDTH`] 配套的设计高度（px）。
+pub(crate) const DESIGN_HEIGHT: f64 = 760.0;
+
+/// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）；尺寸相关的两条
+/// 规则由 [`size_style`] 单独生成。
 const STYLE: &str = r#"<style>
-.qtool-s21{font-family:system-ui,'Segoe UI',sans-serif;max-width:1000px;color:#1f2328}
-/* 高度跟着宽度走（1000:760 就是四面板的设计比例；气泡里宽度正好 1000 ⇒ 仍是 760） */
-.qtool-s21 .qtool-plot{width:100%;aspect-ratio:1000/760;max-height:85vh}
+.qtool-s21{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
+/* 高度跟着宽度走（比例即 DESIGN_WIDTH:DESIGN_HEIGHT；气泡里宽度正好是设计宽度 ⇒ 仍是设计高度） */
+.qtool-s21 .qtool-plot{width:100%;max-height:85vh}
 .qtool-s21 .qtool-params{border-collapse:collapse;width:100%;font-size:12px;margin-top:6px}
 .qtool-s21 .qtool-params th,.qtool-s21 .qtool-params td{border-bottom:1px solid #e5e7eb;padding:2px 8px;text-align:right;white-space:nowrap}
 .qtool-s21 .qtool-params th:first-child,.qtool-s21 .qtool-params td:first-child{text-align:left;font-family:ui-monospace,Consolas,monospace}
@@ -38,6 +46,16 @@ const STYLE: &str = r#"<style>
 .qtool-s21 .qtool-error{margin-top:6px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:13px}
 .qtool-s21 .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
 </style>"#;
+
+/// 尺寸相关的 CSS（卡片宽度上限 + 图的高宽比）：CSS 读不到 Rust 常量，所以由
+/// [`DESIGN_WIDTH`]/[`DESIGN_HEIGHT`] 插值生成，不在样式表里再写一份。
+fn size_style() -> String {
+    format!(
+        "<style>.qtool-s21{{max-width:{width}px}}.qtool-s21 .qtool-plot{{aspect-ratio:{width}/{height}}}</style>",
+        width = DESIGN_WIDTH,
+        height = DESIGN_HEIGHT
+    )
+}
 
 const DATA_COLOR: &str = "#663399";
 const FIT_COLOR: &str = "#d62728";
@@ -76,6 +94,7 @@ pub fn s21_fit_plot_div(
         escape_html(div_id)
     ));
     html.push_str(STYLE);
+    html.push_str(&size_style());
     html.push_str(&format!("<div class=\"qtool-plot\">{plot_html}</div>"));
     html.push_str(&crate::utils::resize::register_script(div_id));
     html.push_str(&overlay.table_html());
@@ -238,7 +257,7 @@ struct ParamRow {
     stderr: String,
 }
 
-/// 密集拟合曲线（10× 数据点数）。
+/// 密集拟合曲线（数据点数的 [`DENSE_FACTOR`] 倍）。
 struct DenseCurves {
     freqs_hz: Vec<f64>,
     s21: Vec<Complex64>,
@@ -388,9 +407,12 @@ fn overlay<'a>(
     }
 }
 
-/// 密集频率网格（10× 数据点数，闭区间）；点数不足以插值时返回 None。
+/// 密集拟合曲线的采样倍率：点数 = 数据点数 × 该值。
+const DENSE_FACTOR: usize = 10;
+
+/// 密集频率网格（[`DENSE_FACTOR`]× 数据点数，闭区间）；点数不足以插值时返回 None。
 fn dense_grid(freqs: &[f64]) -> Option<Vec<f64>> {
-    let count = 10 * freqs.len();
+    let count = DENSE_FACTOR * freqs.len();
     match (freqs.first(), freqs.last()) {
         (Some(first), Some(last)) => match count >= 2 {
             true => Some(
@@ -524,9 +546,15 @@ fn markers(
     trace
 }
 
-/// 面板中央的纯文本标注（(0.5, 0.5) 与 x4/y4 的显式 range [0,1] 配套）。
+/// 归一化面板的固定坐标范围（配 [`CENTER`] 用）：text 标注画在正中，缩放面板时不会漂。
+const UNIT_RANGE: [f64; 2] = [0.0, 1.0];
+
+/// 面板正中。
+const CENTER: f64 = 0.5;
+
+/// 面板中央的纯文本标注（[`CENTER`]，配 x4/y4 的显式 [`UNIT_RANGE`]）。
 fn text_label(text: &str, x_ref: &'static str, y_ref: &'static str) -> Box<dyn Trace> {
-    let trace: Box<dyn Trace> = Scatter::new(vec![0.5], vec![0.5])
+    let trace: Box<dyn Trace> = Scatter::new(vec![CENTER], vec![CENTER])
         .mode(Mode::Text)
         .text(text.to_string())
         .show_legend(false)
@@ -732,6 +760,13 @@ fn panel_traces(panel: Panel, data: &DataView, overlay: &FitOverlay) -> Vec<Box<
     traces
 }
 
+/// 2×2 网格的 paper 分数：左右列各 40%、上下排各 40%，其余留给轴标题
+/// （左列与下排同值只是设计巧合，两者各自可调）。
+const X_LEFT: [f64; 2] = [0.0, 0.40];
+const X_RIGHT: [f64; 2] = [0.62, 1.0];
+const Y_TOP: [f64; 2] = [0.58, 1.0];
+const Y_BOTTOM: [f64; 2] = [0.0, 0.40];
+
 /// 2×2 网格布局；失败时在归一化面板上标注"无拟合结果"。
 fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
     // 幅值/相位面板的值域（含拟合曲线），据此固定左右两轴的 range：
@@ -764,37 +799,37 @@ fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
                 .y_anchor(Anchor::Bottom),
         )
         .x_axis(axis_style(
-            Axis::new().domain(&[0.0, 0.40]).anchor("y").title(Panel::Magnitude.x_title()),
+            Axis::new().domain(&X_LEFT).anchor("y").title(Panel::Magnitude.x_title()),
         ))
         .y_axis(at_range(
             axis_style(
-                Axis::new().domain(&[0.58, 1.0]).anchor("x").title(Panel::Magnitude.y_title()),
+                Axis::new().domain(&Y_TOP).anchor("x").title(Panel::Magnitude.y_title()),
             ),
             magnitude_range,
         ))
         .x_axis2(axis_style(
-            Axis::new().domain(&[0.62, 1.0]).anchor("y2").title(Panel::Phase.x_title()),
+            Axis::new().domain(&X_RIGHT).anchor("y2").title(Panel::Phase.x_title()),
         ))
         .y_axis2(at_range(
-            axis_style(Axis::new().domain(&[0.58, 1.0]).anchor("x2").title(Panel::Phase.y_title())),
+            axis_style(Axis::new().domain(&Y_TOP).anchor("x2").title(Panel::Phase.y_title())),
             phase_range,
         ))
         .x_axis3(axis_style(
-            Axis::new().domain(&[0.0, 0.40]).anchor("y3").title(Panel::Iq.x_title()),
+            Axis::new().domain(&X_LEFT).anchor("y3").title(Panel::Iq.x_title()),
         ))
         .y_axis3(axis_style(
             Axis::new()
-                .domain(&[0.0, 0.40])
+                .domain(&Y_BOTTOM)
                 .anchor("x3")
                 .title(Panel::Iq.y_title())
                 .scale_anchor("x3"),
         ))
         .x_axis4(axis_style(
-            Axis::new().domain(&[0.62, 1.0]).anchor("y4").title(Panel::Norm.x_title()),
+            Axis::new().domain(&X_RIGHT).anchor("y4").title(Panel::Norm.x_title()),
         ))
         .y_axis4(axis_style(
             Axis::new()
-                .domain(&[0.0, 0.40])
+                .domain(&Y_BOTTOM)
                 .anchor("x4")
                 .title(Panel::Norm.y_title())
                 .scale_anchor("x4"),
@@ -829,17 +864,17 @@ fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
         FitOverlay::Absent { .. } => layout
             .x_axis4(axis_style(
                 Axis::new()
-                    .domain(&[0.62, 1.0])
+                    .domain(&X_RIGHT)
                     .anchor("y4")
                     .title(Panel::Norm.x_title())
-                    .range(vec![0.0, 1.0]),
+                    .range(UNIT_RANGE.to_vec()),
             ))
             .y_axis4(axis_style(
                 Axis::new()
-                    .domain(&[0.0, 0.40])
+                    .domain(&Y_BOTTOM)
                     .anchor("x4")
                     .title(Panel::Norm.y_title())
-                    .range(vec![0.0, 1.0])
+                    .range(UNIT_RANGE.to_vec())
                     .scale_anchor("x4"),
             )),
     }
@@ -863,13 +898,16 @@ fn value_bounds(lists: &[&[f64]]) -> Option<[f64; 2]> {
     }
 }
 
-/// 数据轴范围：值域 + 5% 边距；退化（span ≤ 0）时交回 plotly 自适应。
+/// 数据轴相对值域多留的边距（占 span 的比例）。
+const AXIS_PAD: f64 = 0.05;
+
+/// 数据轴范围：值域 ±[`AXIS_PAD`]；退化（span ≤ 0）时交回 plotly 自适应。
 fn pad(bounds: Option<[f64; 2]>) -> Option<[f64; 2]> {
     match bounds {
         Some([low, high]) => {
             let span = high - low;
             match span > 0.0 {
-                true => Some([low - 0.05 * span, high + 0.05 * span]),
+                true => Some([low - AXIS_PAD * span, high + AXIS_PAD * span]),
                 false => None,
             }
         }
@@ -877,13 +915,16 @@ fn pad(bounds: Option<[f64; 2]>) -> Option<[f64; 2]> {
     }
 }
 
-/// 残差右轴范围：与数据轴同 span（同一 scale），整体下移使残差 0 落在面板 12% 高度处。
+/// 残差 0 落在面板高度的这个比例处（右轴整体下移这么多）。
+const RESIDUAL_ZERO_AT: f64 = 0.12;
+
+/// 残差右轴范围：与数据轴同 span（同一 scale），整体下移使残差 0 落在面板 [`RESIDUAL_ZERO_AT`] 高度处。
 fn residual_axis_range(data_range: Option<[f64; 2]>) -> Option<[f64; 2]> {
     match data_range {
         Some([low, high]) => {
             let span = high - low;
             match span > 0.0 {
-                true => Some([-0.12 * span, 0.88 * span]),
+                true => Some([-RESIDUAL_ZERO_AT * span, (1.0 - RESIDUAL_ZERO_AT) * span]),
                 false => None,
             }
         }

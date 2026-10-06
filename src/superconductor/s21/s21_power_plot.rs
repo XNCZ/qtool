@@ -11,7 +11,7 @@
 //!   [`s21_plot::PLOTLY_JS_CDN`](crate::superconductor::s21::s21_plot::PLOTLY_JS_CDN)）。
 
 use crate::superconductor::s21::{Complex64, S21Error, S21Model};
-use crate::superconductor::s21::s21_plot::s21_fit_plot_div;
+use crate::superconductor::s21::s21_plot::{DESIGN_WIDTH, s21_fit_plot_div};
 use crate::utils::bubble::{Bubble, CARD_STYLE, bubble, card_title};
 use crate::utils::heatmap::{Grid2d, Palette, heatmap};
 use crate::utils::{detrend, unwrap_phase};
@@ -120,7 +120,7 @@ pub fn s21_power_plot_div(freqs_hz: &[f64], lines: &[PowerLine<'_>], div_id: &st
         triggers: &[format!("{div_id}-amp-plot"), format!("{div_id}-phase-plot")],
         row_values: &powers,
         labels: &labels,
-        panel_width: PANEL_W,
+        panel_width: DESIGN_WIDTH,
         scale: SCALE,
     });
 
@@ -135,8 +135,6 @@ pub fn s21_power_plot_div(freqs_hz: &[f64], lines: &[PowerLine<'_>], div_id: &st
     )
 }
 
-/// 气泡里行面板的原始宽度（缩放前），px。
-const PANEL_W: f64 = 1000.0;
 /// 面板在气泡/浮层里的缩放比例。
 const SCALE: f64 = 0.62;
 

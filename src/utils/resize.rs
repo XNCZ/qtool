@@ -26,16 +26,21 @@ const BOOTSTRAP: &str = r#"(function () {
   if (window.__qtoolResize) { return; }
   var targets = [];
   var queued = false;
+  // 视口上下各放宽这么多像素：范围内的图当作"可能要出现"（滚动回旋余地），
+  // 范围外的先标脏、等滚进来再补 —— 拖一下窗口不会把几十张离屏图全重排。
+  var VIEWPORT_MARGIN = 200;
+  // 判定"还没布局好 / 已不可见"的尺寸阈值，px。
+  var MIN_SIZE = 1;
   var flush = function () {
     queued = false;
     if (!window.Plotly) { return; }
-    var limit = window.innerHeight + 200;
+    var limit = window.innerHeight + VIEWPORT_MARGIN;
     for (var i = targets.length - 1; i >= 0; i--) {
       var t = targets[i];
       if (!t.el.isConnected) { observer.unobserve(t.el); targets.splice(i, 1); continue; }
       if (!t.dirty) { continue; }
       var box = t.el.getBoundingClientRect();
-      if (box.width < 1 || box.height < 1 || box.bottom < -200 || box.top > limit) { continue; }
+      if (box.width < MIN_SIZE || box.height < MIN_SIZE || box.bottom < -VIEWPORT_MARGIN || box.top > limit) { continue; }
       t.dirty = false;
       Plotly.Plots.resize(t.el);
     }

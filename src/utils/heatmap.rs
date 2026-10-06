@@ -208,6 +208,13 @@ pub(crate) fn heatmap(grid: &Grid2d<'_>, div_id: &str) -> String {
     )
 }
 
+/// 版面分区（paper 分数）：热图占 [`X_MAP`]×[`Y_MAP`]，下方边线图 [X_MAP]×[`Y_BOTTOM`]，
+/// 右侧边线图 [`X_RIGHT`]×[Y_MAP]；其余留给轴标题与 colorbar。
+const X_MAP: [f64; 2] = [0.0, 0.78];
+const Y_MAP: [f64; 2] = [0.26, 1.0];
+const Y_BOTTOM: [f64; 2] = [0.0, 0.16];
+const X_RIGHT: [f64; 2] = [0.86, 1.0];
+
 fn layout(grid: &Grid2d<'_>) -> Layout {
     Layout::new()
         .show_legend(false)
@@ -215,7 +222,7 @@ fn layout(grid: &Grid2d<'_>) -> Layout {
         // trace 会按 6% 余量参与算范围，把轴撑开、四周留下一圈空格子大小的白边。
         .x_axis(axis_style(
             Axis::new()
-                .domain(&[0.0, 0.78])
+                .domain(&X_MAP)
                 .anchor("y")
                 // 热图的频率轴放顶部：底部那条留给下方边线图，两条轴不再挤在一起
                 .side(AxisSide::Top)
@@ -224,32 +231,32 @@ fn layout(grid: &Grid2d<'_>) -> Layout {
         ))
         .y_axis(axis_style(
             Axis::new()
-                .domain(&[0.26, 1.0])
+                .domain(&Y_MAP)
                 .anchor("x")
                 .title(grid.y_title)
                 .range(edge_range(grid.y)),
         ))
         .x_axis2(axis_style(
             Axis::new()
-                .domain(&[0.0, 0.78])
+                .domain(&X_MAP)
                 .anchor("y2")
                 .matches("x")
                 .title(grid.x_title),
         ))
         .y_axis2(axis_style(
             Axis::new()
-                .domain(&[0.0, 0.16])
+                .domain(&Y_BOTTOM)
                 .anchor("x2")
                 .title(grid.value_title),
         ))
         .x_axis3(axis_style(
             Axis::new()
-                .domain(&[0.86, 1.0])
+                .domain(&X_RIGHT)
                 .anchor("y3")
                 .title(grid.value_title),
         ))
         .y_axis3(axis_style(
-            Axis::new().domain(&[0.26, 1.0]).anchor("x3").matches("y"),
+            Axis::new().domain(&Y_MAP).anchor("x3").matches("y"),
         ))
 }
 
