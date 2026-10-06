@@ -204,11 +204,140 @@ pub(crate) fn linear_detrend(x: &[f64], y: &[f64], slope: f64, intercept: f64) -
         .collect()
 }
 
+/// 局部极大的下标（scipy `find_peaks` 的口径）。
+///
+/// 严格大于左邻、且右侧下降的样点是峰；平台（连续相等的样点）取其中点，与 scipy 的
+/// plateau 处理一致。数组端点不算峰——峰落在扫描边界时要靠调用方自行兜底（例如并入全局极大）。
+///
+/// 形参:
+///     y: 曲线 (n,)
+///
+/// 返回值:
+///    峰位下标，升序
+pub(crate) fn local_maxima(y: &[f64]) -> Vec<usize> {
+    let mut peaks = Vec::new();
+    let n = y.len();
+    let mut i = 1;
+    while i + 1 < n {
+        match y[i] > y[i - 1] {
+            true => {
+                // 平台：向右吃掉相等的一段，峰位取平台中点
+                let mut j = i;
+                while j + 1 < n && y[j + 1] == y[i] {
+                    j += 1;
+                }
+                match j + 1 < n && y[j + 1] < y[i] {
+                    true => peaks.push((i + j) / 2),
+                    false => {}
+                }
+                i = j + 1;
+            }
+            false => i += 1,
+        }
+    }
+    peaks
+}
+
+/// 取向候选：`flipped` 为真时取 `1 − x`（物理量的"投影反向"就是这条曲线），否则原样。
+///
+/// 投影方向的正负号在自定轴时只是约定，故调用方常把两个取向各拟合一遍、按残差择优。
+///
+/// 形参:
+///     values: 曲线 (n,)
+///     flipped: 是否取反向
+///
+/// 返回值:
+///     该取向下的曲线 (n,)
+pub(crate) fn orient(values: &[f64], flipped: bool) -> Vec<f64> {
+    match flipped {
+        true => values.iter().map(|value| 1.0 - value).collect(),
+        false => values.to_vec(),
+    }
+}
+
+/// 去均值后的一维幅度谱（单边）。
+///
+/// 频率轴 `f_k = k / (n·Δx)`，只取 `k = 1..=n/2`：直流项按定义不入结果——曲线无振荡时谱上
+/// 只剩直流，把它留在里面会让"无振荡"与"振荡频率为零"混为一谈。网格取自前两点，x 须等间距
+/// 单调递增。
+///
+/// 朴素 DFT 是 O(n²)，但扫描点数只有几十到几百，够快，也就不必为此引一个 FFT 依赖。本函数
+/// 同时供初值估计（`rabi_amp` 的傅里叶候选）与报告里的频谱面板使用——两处各写一份的话，
+/// 面板上看到的峰与拟合用的初值就不再是同一个定义。
+///
+/// 形参:
+///     x: 自变量轴 (n,)，须等间距、单调递增
+///     y: 曲线 (n,)
+///
+/// 返回值:
+///     (频率轴, 幅度谱)，两者等长；点数不足、长度不一致或网格退化时皆空
+pub(crate) fn spectrum(x: &[f64], y: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let n = y.len();
+    if n < 2 || x.len() != n {
+        return (Vec::new(), Vec::new());
+    }
+    let step = x[1] - x[0];
+    if step <= 0.0 {
+        return (Vec::new(), Vec::new());
+    }
+    let center = mean(y);
+    let mut freqs = Vec::with_capacity(n / 2);
+    let mut amps = Vec::with_capacity(n / 2);
+    for k in 1..=n / 2 {
+        let (mut re, mut im) = (0.0, 0.0);
+        for (j, value) in y.iter().enumerate() {
+            let phase = 2.0 * PI * (k * j) as f64 / n as f64;
+            let centered = value - center;
+            re += centered * phase.cos();
+            im -= centered * phase.sin();
+        }
+        freqs.push(k as f64 / (n as f64 * step));
+        amps.push((re * re + im * im).sqrt());
+    }
+    (freqs, amps)
+}
+
 #[cfg(feature = "plot")]
 pub(crate) mod heatmap;
+#[cfg(feature = "plot")]
+pub(crate) mod panels;
 #[cfg(feature = "plot")]
 pub(crate) mod params;
 #[cfg(feature = "plot")]
 pub(crate) mod bubble;
 #[cfg(feature = "plot")]
 pub(crate) mod resize;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 局部极大的口径（与 scipy `find_peaks` 逐数组对拍过，这里固化成可见的样例）。
+    #[test]
+    fn local_maxima_matches_scipy_semantics() {
+        let cases: [(&[f64], &[usize]); 7] = [
+            (&[1.0, 3.0, 2.0], &[1]),
+            // 端点不算峰：共振落在扫描边界时要靠调用方兜底
+            (&[3.0, 2.0, 1.0], &[]),
+            // 平台取中点
+            (&[1.0, 3.0, 3.0, 3.0, 2.0], &[2]),
+            // 平台顶到数组末端不算峰
+            (&[1.0, 3.0, 3.0], &[]),
+            (&[0.0, 1.0, 0.0, 2.0, 0.0], &[1, 3]),
+            (&[1.0, 2.0, 3.0], &[]),
+            // 噪声抖动每一个都算峰——修峰交给下游的残差比较
+            (&[0.0, 1.0, 0.2, 1.1, 0.3], &[1, 3]),
+        ];
+        for (y, expected) in cases {
+            assert_eq!(local_maxima(y), expected, "{y:?}");
+        }
+    }
+
+    /// 取向候选：取反向就是 `1 − x`，不反就是原样。
+    #[test]
+    fn orient_is_the_complement() {
+        let values = [0.0, 0.25, 1.0];
+        assert_eq!(orient(&values, false), vec![0.0, 0.25, 1.0]);
+        assert_eq!(orient(&values, true), vec![1.0, 0.75, 0.0]);
+    }
+}

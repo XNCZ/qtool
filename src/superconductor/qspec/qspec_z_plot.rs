@@ -12,7 +12,8 @@
 //! `qspec_vs_z_plot(zs, peaks, result=...)` 那一步）。
 
 use crate::superconductor::qspec::qspec::{QspecError, QspecFit};
-use crate::superconductor::qspec::qspec_plot::{DESIGN_WIDTH, FIT_COLOR, qspec_fit_plot_div};
+use crate::superconductor::qspec::qspec_plot::qspec_fit_plot_div;
+use crate::utils::panels::{FIT_COLOR, GRID_2X2};
 use crate::superconductor::{StateCenters, p1};
 use crate::utils::bubble::{Bubble, bubble, framize};
 use crate::utils::heatmap::{
@@ -24,7 +25,7 @@ use plotly::common::{ErrorData, ErrorType, Line, Marker, Mode};
 use plotly::layout::{Axis, Layout, Margin};
 use plotly::{Plot, Scatter};
 
-/// 气泡/浮层里面板的缩放比例（设计宽度按 [`DESIGN_WIDTH`] 原样布局，再整体缩到这么小）。
+/// 气泡/浮层里面板的缩放比例（设计宽度按 [`GRID_2X2`] 原样布局，再整体缩到这么小）。
 const SCALE: f64 = 0.62;
 
 /// 线图的上边距，px：图名在 HTML 图名行里、图内也没有顶部轴，plotly 默认的 100px 全是空白，
@@ -38,7 +39,7 @@ const STYLE: &str = r#"<style>
 .qtool-qspec-z .qtool-qspec-z-maps{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
 .qtool-qspec-z .qtool-qspec-z-maps>.qtool-2d{flex:1 1 420px;min-width:0}
 /* 下方线图：flex-basis 100% 强制换到卡片内的下一行 */
-.qtool-qspec-z .qtool-qspec-z-lines{flex:1 1 100%;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
+.qtool-qspec-z .qtool-qspec-z-lines{flex:1 1 100%;min-width:0;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
 .qtool-qspec-z .qtool-qspec-z-lines>.qtool-line{flex:1 1 420px;min-width:0}
 /* 线图比二维图扁：容器高度 = plotly 上边距 + 纸面 + 下边距 */
 .qtool-qspec-z .qtool-line-plot{width:100%;aspect-ratio:18/5;max-height:60vh}
@@ -118,7 +119,7 @@ pub fn qspec_z_plot_div(
     let mut templates = String::new();
     for (row, line) in lines.iter().enumerate() {
         let panel_base = format!("{div_id}-panel{row}");
-        let panel_html = qspec_fit_plot_div(freqs_hz, line.iq, states, line.fit, &panel_base, None);
+        let panel_html = qspec_fit_plot_div(freqs_hz, line.iq, states, None, line.fit, &panel_base, None);
         templates.push_str(&format!(
             "<template id=\"{div_id}-tpl-{row}\"><div class=\"qtool-panel\">{panel_html}</div></template>\n"
         ));
@@ -131,7 +132,7 @@ pub fn qspec_z_plot_div(
         triggers: &[format!("{div_id}-map-plot")],
         row_values: &zs,
         labels: &labels,
-        panel_width: DESIGN_WIDTH,
+        panel_width: GRID_2X2.width,
         scale: SCALE,
     });
 

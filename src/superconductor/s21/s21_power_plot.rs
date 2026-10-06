@@ -14,9 +14,8 @@
 //!   [`s21_plot::PLOTLY_JS_CDN`](crate::superconductor::s21::s21_plot::PLOTLY_JS_CDN)）。
 
 use crate::superconductor::s21::s21::{Complex64, JAC_NAMES, S21Error, S21Model};
-use crate::superconductor::s21::s21_plot::{
-    DATA_COLOR, DESIGN_WIDTH, FIT_COLOR, s21_fit_plot_div, unit_of,
-};
+use crate::superconductor::s21::s21_plot::{s21_fit_plot_div, unit_of};
+use crate::utils::panels::{DATA_COLOR, FIT_COLOR, GRID_2X2};
 use crate::utils::bubble::{Bubble, bubble, framize};
 use crate::utils::heatmap::{
     Grid2d, Palette, axis_style, figure_font, heatmap, interactive_config,
@@ -162,7 +161,7 @@ pub fn s21_power_plot_div(
         triggers: &[format!("{div_id}-amp-plot"), format!("{div_id}-phase-plot")],
         row_values: &powers,
         labels: &labels,
-        panel_width: DESIGN_WIDTH,
+        panel_width: GRID_2X2.width,
         scale: SCALE,
     });
 
@@ -523,7 +522,7 @@ const STYLE: &str = r#"<style>
 /* 每张图至少 420px：容器放不下两张时自动换行、各占一行（窄屏不再互相压扁） */
 .qtool-power .qtool-power-maps>.qtool-2d{flex:1 1 420px;min-width:0}
 /* 下方两张线图：flex-basis 100% 强制换到卡片内的下一行，内部再并排/换行 */
-.qtool-power .qtool-power-lines{flex:1 1 100%;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
+.qtool-power .qtool-power-lines{flex:1 1 100%;min-width:0;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
 .qtool-power .qtool-power-lines>.qtool-line{flex:1 1 420px;min-width:0}
 /* 线图比二维图扁：容器高度 = plotly 上边距 + 纸面 + 下边距，18/5 是为"纸面高度与
    改动前一致"配的（756px 宽时容器 210px、纸面 120px） */

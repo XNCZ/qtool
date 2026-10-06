@@ -23,8 +23,8 @@
 //!
 //! 全部频率量使用 SI 单位 Hz。
 
-use crate::superconductor::{StateCenters, p1};
-use crate::utils::argmax;
+use crate::superconductor::{StateCenters, p1, p1_sigma};
+use crate::utils::{argmax, local_maxima, orient};
 use lmfit::{Curve, Model, ModelResult};
 use rayon::prelude::*;
 
@@ -143,40 +143,6 @@ pub(crate) fn half_max_width(freqs_hz: &[f64], y: &[f64], k: usize) -> f64 {
     hi - lo
 }
 
-/// 局部极大的下标（scipy `find_peaks` 的口径）。
-///
-/// 严格大于左邻、且右侧下降的样点是峰；平台（连续相等的样点）取其中点，与 scipy 的
-/// plateau 处理一致。数组端点不算峰——共振落在扫描边界时由调用方并入全局极大兜底。
-///
-/// 形参:
-///     y: 曲线 (n,)
-///
-/// 返回值:
-///     峰位下标，升序
-pub(crate) fn local_maxima(y: &[f64]) -> Vec<usize> {
-    let mut peaks = Vec::new();
-    let n = y.len();
-    let mut i = 1;
-    while i + 1 < n {
-        match y[i] > y[i - 1] {
-            true => {
-                // 平台：向右吃掉相等的一段，峰位取平台中点
-                let mut j = i;
-                while j + 1 < n && y[j + 1] == y[i] {
-                    j += 1;
-                }
-                match j + 1 < n && y[j + 1] < y[i] {
-                    true => peaks.push((i + j) / 2),
-                    false => {}
-                }
-                i = j + 1;
-            }
-            false => i += 1,
-        }
-    }
-    peaks
-}
-
 /// 宽度候选：各峰位自己的半高宽，钳到 `[一个采样间距, 全扫描范围]`。
 ///
 /// 宽度须落在扫描范围内，否则初值不可行：窄过一个采样间距的峰在数据上无从分辨，宽过
@@ -275,6 +241,8 @@ pub enum QspecError {
     LengthMismatch { freqs: usize, iq: usize },
     /// 频点数不足以约束四参数线型。
     LackPoints { points: usize, min: usize },
+    /// 批量拟合时逐线 `sigmas` 的份数与频率线数量不一致。
+    BatchSigmaMismatch { lines: usize, sigmas: usize },
     /// 无初值候选，或全部候选均未收敛。
     AllFitsUnsuccess,
     /// 单次拟合失败，透传 lmfit 的错误。
@@ -291,6 +259,10 @@ impl std::fmt::Display for QspecError {
             Self::LackPoints { points, min } => write!(
                 f,
                 "{points} frequency points cannot constrain a 4-parameter Lorentzian; at least {min} are needed"
+            ),
+            Self::BatchSigmaMismatch { lines, sigmas } => write!(
+                f,
+                "per-line sigma count ({sigmas}) does not match the number of frequency lines ({lines})"
             ),
             Self::AllFitsUnsuccess => {
                 write!(f, "no initial-value candidate produced a fit")
@@ -327,25 +299,15 @@ pub(crate) fn fit_once(
     freqs_hz: &[f64],
     y: &[f64],
     p0: &Lorentz,
+    sigma: Option<&[f64]>,
 ) -> Result<ModelResult<Lorentz>, QspecError> {
-    match p0.fit(y, freqs_hz) {
+    let outcome = match sigma {
+        Some(weights) => p0.fit_sigma(y, freqs_hz, weights),
+        None => p0.fit(y, freqs_hz),
+    };
+    match outcome {
         Ok(result) => Ok(result),
         Err(err) => Err(QspecError::Lmfit(err)),
-    }
-}
-
-/// 取向：`flipped` 为真时取 `1 − P1`，否则原样。
-///
-/// 形参:
-///     prob: P1 曲线 (n,)
-///     flipped: 是否翻转
-///
-/// 返回值:
-///     该取向下的曲线 (n,)
-fn orient(prob: &[f64], flipped: bool) -> Vec<f64> {
-    match flipped {
-        true => prob.iter().map(|value| 1.0 - value).collect(),
-        false => prob.to_vec(),
     }
 }
 
@@ -354,13 +316,18 @@ fn orient(prob: &[f64], flipped: bool) -> Vec<f64> {
 /// 形参:
 ///     freqs_hz: 频率轴 (n,)，Hz
 ///     prob: 待拟合的 P1 曲线 (n,)，已定向
+///     sigma: P1 域的逐点不确定度；None 表示不加权
 ///
 /// 返回值:
 ///     残差最小的拟合结果；无候选或全部候选失败的返回错误
-fn fit_orient(freqs_hz: &[f64], prob: &[f64]) -> Result<ModelResult<Lorentz>, QspecError> {
+fn fit_orient(
+    freqs_hz: &[f64],
+    prob: &[f64],
+    sigma: Option<&[f64]>,
+) -> Result<ModelResult<Lorentz>, QspecError> {
     let mut best: Option<ModelResult<Lorentz>> = None;
     for p0 in p0_candidates(freqs_hz, prob) {
-        match fit_once(freqs_hz, prob, &p0) {
+        match fit_once(freqs_hz, prob, &p0, sigma) {
             Ok(result) => {
                 let take = match &best {
                     Some(current) => result.chisqr < current.chisqr,
@@ -397,6 +364,9 @@ fn fit_orient(freqs_hz: &[f64], prob: &[f64]) -> Result<ModelResult<Lorentz>, Qs
 ///     freqs_hz: XY 驱动频率数组 (n,)，Hz，取绝对频率（比特频率加扫描失谐）
 ///     iq: 单条谱线的平均 IQ (n,)，复数
 ///     states: 各态标定中心；None 表示未标定，P1 改由数据自身定轴
+///     sigma: **IQ 域**的逐点测量不确定度（每个实/虚分量的 σ，与 `s21` 同一口径；
+///            点是 n 次单发平均时传 `std(shots)/√n`）。给定时按 1/σ² 加权，经
+///            [`p1_sigma`] 折算到 P1 空间；None 表示不加权
 ///
 /// 返回值:
 ///     残差最小的拟合结果，`model.fq` 即比特频率、`model.fwhm` 即谱线线宽；
@@ -405,6 +375,7 @@ pub fn qspec_fit(
     freqs_hz: &[f64],
     iq: &[Complex64],
     states: Option<&StateCenters>,
+    sigma: Option<&[f64]>,
 ) -> Result<QspecFit, QspecError> {
     if freqs_hz.is_empty() || iq.is_empty() {
         return Err(QspecError::EmptyData);
@@ -426,8 +397,13 @@ pub fn qspec_fit(
     if !prob.iter().any(|value| value.is_finite()) {
         return Err(QspecError::AllFitsUnsuccess);
     }
+    // 翻转是 1 − P1，带负号的仿射变换，满量程不变，故两个取向共用同一份 σ_P1
+    let weights = match sigma {
+        Some(values) => Some(p1_sigma(iq, states, values)),
+        None => None,
+    };
 
-    let trial = match fit_orient(freqs_hz, &prob) {
+    let trial = match fit_orient(freqs_hz, &prob, weights.as_deref()) {
         Ok(result) => result,
         Err(err) => return Err(err),
     };
@@ -441,7 +417,7 @@ pub fn qspec_fit(
         }),
         true => {
             let orientation = orient(&prob, true);
-            match fit_orient(freqs_hz, &orientation) {
+            match fit_orient(freqs_hz, &orientation, weights.as_deref()) {
                 Ok(result) => Ok(QspecFit {
                     result,
                     p1: orientation,
@@ -461,16 +437,33 @@ pub fn qspec_fit(
 ///     freqs_hz: 公共 XY 驱动频率轴 (n,)，Hz
 ///     iq_lines: 每条线的平均复数 IQ，长度均为 n
 ///     states: 各态标定中心；None 表示未标定，P1 由各线自身定轴
+///     sigmas: 每条线各自的 IQ 域逐点不确定度，逐线对应；给定时份数须与 `iq_lines`
+///             相同，每份长度须为 n；None 表示全部不加权
 ///
 /// 返回值:
-///     与 `iq_lines` 等长的结果列表，逐线对应
+///     与 `iq_lines` 等长的结果列表，逐线对应；`sigmas` 缺少对应份的线返回
+///     [`QspecError::BatchSigmaMismatch`]
 pub fn qspec_fit_batch(
     freqs_hz: &[f64],
     iq_lines: &[Vec<Complex64>],
     states: Option<&StateCenters>,
+    sigmas: Option<&[Vec<f64>]>,
 ) -> Vec<Result<QspecFit, QspecError>> {
-    iq_lines
-        .par_iter()
-        .map(|line| qspec_fit(freqs_hz, line, states))
-        .collect()
+    match sigmas {
+        Some(list) => iq_lines
+            .par_iter()
+            .enumerate()
+            .map(|(index, line)| match list.get(index) {
+                Some(sigma) => qspec_fit(freqs_hz, line, states, Some(sigma)),
+                None => Err(QspecError::BatchSigmaMismatch {
+                    lines: iq_lines.len(),
+                    sigmas: list.len(),
+                }),
+            })
+            .collect(),
+        None => iq_lines
+            .par_iter()
+            .map(|line| qspec_fit(freqs_hz, line, states, None))
+            .collect(),
+    }
 }

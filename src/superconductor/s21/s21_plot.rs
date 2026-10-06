@@ -10,8 +10,11 @@
 //! 两条曲线可能整体错开；此处取同趋势以保证重合）。
 
 use crate::utils::bubble::framize;
-use crate::utils::heatmap::{
-    TITLE_COLOR, TITLE_SIZE, axis_style, escape_html, figure_font, interactive_config,
+use crate::utils::heatmap::{escape_html, interactive_config};
+use crate::utils::panels::{
+    AxisOpts, Cell, DATA_COLOR, FIT_COLOR, GRID_2X2, PanelSpec, ResidualAxis, Titles, axis_refs,
+    curve, dense_grid, layout, markers, pad, report_div, residual_axis_range,
+    residual_markers, value_bounds,
 };
 use crate::utils::params::{ParamRow, params_table};
 use crate::superconductor::s21::{
@@ -20,44 +23,22 @@ use crate::superconductor::s21::{
 use crate::utils::{detrend, linear_detrend, unwrap_phase};
 use lmfit::ComplexResult;
 use plotly::Trace;
-use plotly::common::{Anchor, AxisSide, ErrorData, ErrorType, Font, HoverInfo, Line, Marker, Mode};
-use plotly::layout::{Annotation, Axis, Layout, Legend};
+use plotly::common::{HoverInfo, Mode};
 use plotly::{Plot, Scatter};
 
 /// plotly.js 的 CDN 引入标签（版本与 plotly crate 内嵌的一致）；宿主页面放一次即可。
 pub const PLOTLY_JS_CDN: &str =
     r#"<script src="https://cdn.plot.ly/plotly-3.0.1.min.js" charset="utf-8"></script>"#;
 
-/// 四面板报告的设计宽度（px）。气泡/浮层按这个宽度**原样布局**再整体 `transform: scale`
-/// 缩放，所以它同时是 `s21_power_plot` 里面板宽度的来源，也定下 `.qtool-plot` 的高宽比。
-pub(crate) const DESIGN_WIDTH: f64 = 1000.0;
-
-/// 与 [`DESIGN_WIDTH`] 配套的设计高度（px）。
-pub(crate) const DESIGN_HEIGHT: f64 = 760.0;
-
 /// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）；尺寸相关的两条
-/// 规则由 [`size_style`] 单独生成。
+/// 规则由 [`crate::utils::panels::size_style`] 单独生成。
 const STYLE: &str = r#"<style>
 .qtool-s21{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
-/* 高度跟着宽度走（比例即 DESIGN_WIDTH:DESIGN_HEIGHT；气泡里宽度正好是设计宽度 ⇒ 仍是设计高度） */
+/* 高度跟着宽度走（比例即网格的设计宽高；气泡里宽度正好是设计宽度 ⇒ 仍是设计高度） */
 .qtool-s21 .qtool-plot{width:100%;max-height:85vh}
 .qtool-s21 .qtool-error{margin-top:6px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:13px}
 .qtool-s21 .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
 </style>"#;
-
-/// 尺寸相关的 CSS（卡片宽度上限 + 图的高宽比）：CSS 读不到 Rust 常量，所以由
-/// [`DESIGN_WIDTH`]/[`DESIGN_HEIGHT`] 插值生成，不在样式表里再写一份。
-fn size_style() -> String {
-    format!(
-        "<style>.qtool-s21{{max-width:{width}px}}.qtool-s21 .qtool-plot{{aspect-ratio:{width}/{height}}}</style>",
-        width = DESIGN_WIDTH,
-        height = DESIGN_HEIGHT
-    )
-}
-
-pub(crate) const DATA_COLOR: &str = "#663399";
-pub(crate) const FIT_COLOR: &str = "#d62728";
-const RESIDUAL_COLOR: &str = "#eab308";
 
 /// 把一条 S21 线渲染成自包含的 HTML div。
 ///
@@ -89,21 +70,14 @@ pub fn s21_fit_plot_div(
     let plot_div_id = format!("{div_id}-plot");
     let plot_html = plot.to_inline_html(Some(plot_div_id.as_str()));
 
-    let mut html = String::new();
-    html.push_str(&format!(
-        "<div class=\"qtool-s21\" id=\"{}\">",
-        escape_html(div_id)
-    ));
-    html.push_str(STYLE);
-    html.push_str(&size_style());
-    html.push_str(&format!("<div class=\"qtool-plot\">{plot_html}</div>"));
-    html.push_str(&crate::utils::resize::register_script(div_id));
-    html.push_str(&overlay.table_html());
-    html.push_str(&format!(
-        "<div class=\"qtool-footer\">Powered by qtool v{}</div>",
-        env!("CARGO_PKG_VERSION")
-    ));
-    html.push_str("</div>\n");
+    let html = report_div(
+        "qtool-s21",
+        STYLE,
+        div_id,
+        &GRID_2X2,
+        &plot_html,
+        &overlay.table_html(),
+    );
     framize(&html, frame)
 }
 
@@ -134,12 +108,13 @@ pub fn s21_fit_plot(
 /// 由数据视图与叠加层装配四面板图（供 div 与 plot 两个入口复用）。
 fn fit_plot(data: &DataView, overlay: &FitOverlay<'_>) -> Plot {
     let mut plot = Plot::new();
-    for panel in Panel::ALL {
-        for trace in panel_traces(panel, data, overlay) {
+    for (index, panel) in Panel::ALL.iter().enumerate() {
+        let (x_ref, y_ref) = axis_refs(index);
+        for trace in panel_traces(*panel, x_ref.as_str(), y_ref.as_str(), data, overlay) {
             plot.add_trace(trace);
         }
     }
-    plot.set_layout(layout(overlay, data));
+    plot.set_layout(layout(&GRID_2X2, &panel_specs(data, overlay)));
     plot.set_configuration(interactive_config());
     plot
 }
@@ -147,57 +122,6 @@ fn fit_plot(data: &DataView, overlay: &FitOverlay<'_>) -> Plot {
 // =========================================================================
 // 面板
 // =========================================================================
-
-/// 四面板之一，统一负责自己的轴绑定与轴标题。
-#[derive(Clone, Copy)]
-enum Panel {
-    Magnitude,
-    Phase,
-    Iq,
-    Norm,
-}
-
-impl Panel {
-    const ALL: [Panel; 4] = [Panel::Magnitude, Panel::Phase, Panel::Iq, Panel::Norm];
-
-    /// (x 轴引用, y 轴引用)，与 `Layout` 的 `x_axis*`/`y_axis*` 绑定。
-    fn axis_refs(self) -> (&'static str, &'static str) {
-        match self {
-            Panel::Magnitude => ("x", "y"),
-            Panel::Phase => ("x2", "y2"),
-            Panel::Iq => ("x3", "y3"),
-            Panel::Norm => ("x4", "y4"),
-        }
-    }
-
-    fn x_title(self) -> &'static str {
-        match self {
-            Panel::Magnitude => "freq (Hz)",
-            Panel::Phase => "freq (Hz)",
-            Panel::Iq => "I",
-            Panel::Norm => "I",
-        }
-    }
-
-    fn y_title(self) -> &'static str {
-        match self {
-            Panel::Magnitude => "|S21|",
-            Panel::Phase => "Phase (rad)",
-            Panel::Iq => "Q",
-            Panel::Norm => "Q",
-        }
-    }
-
-    /// 面板标题（画在该面板正上方；与轴标题分工：标题说"这是哪一块"，轴标题说"画的是什么量"）。
-    fn name(self) -> &'static str {
-        match self {
-            Panel::Magnitude => "Magnitude",
-            Panel::Phase => "Phase",
-            Panel::Iq => "IQ plane",
-            Panel::Norm => "Normalized",
-        }
-    }
-}
 
 /// 原始数据的各视图（与拟合无关）。
 struct DataView {
@@ -391,27 +315,6 @@ fn overlay<'a>(
     }
 }
 
-/// 密集拟合曲线的采样倍率：点数 = 数据点数 × 该值。
-const DENSE_FACTOR: usize = 10;
-
-/// 密集频率网格（[`DENSE_FACTOR`]× 数据点数，闭区间）；点数不足以插值时返回 None。
-fn dense_grid(freqs: &[f64]) -> Option<Vec<f64>> {
-    let count = DENSE_FACTOR * freqs.len();
-    match (freqs.first(), freqs.last()) {
-        (Some(first), Some(last)) => match count >= 2 {
-            true => Some(
-                (0..count)
-                    .map(|k| first + (last - first) * k as f64 / (count - 1) as f64)
-                    .collect(),
-            ),
-            false => None,
-        },
-        (None, Some(_)) => None,
-        (Some(_), None) => None,
-        (None, None) => None,
-    }
-}
-
 /// 参数表：11 个拟合参数 + 2 个派生量，值/stderr 按参数各自的单位格式化。
 fn param_rows(result: &ComplexResult<S21Model>) -> Vec<ParamRow<'static>> {
     let values = result.model.to_array();
@@ -494,40 +397,53 @@ fn format_stderr(name: &str, value: f64) -> String {
 // 曲线与布局
 // =========================================================================
 
-fn markers(
-    x: Vec<f64>,
-    y: Vec<f64>,
-    error_y: Option<Vec<f64>>,
-    name: &str,
-    color: &'static str,
-    size: usize,
-    show_legend: bool,
-    x_ref: &'static str,
-    y_ref: &'static str,
-) -> Box<dyn Trace> {
-    let mut trace: Box<Scatter<f64, f64>> = Scatter::new(x, y)
-        .name(name)
-        // 同名 trace 归入同一 legendgroup：点一次图例即可同时开关四个面板里的同类曲线
-        .legend_group(name)
-        .mode(Mode::Markers)
-        .marker(Marker::new().color(color).size(size))
-        .show_legend(show_legend)
-        .x_axis(x_ref)
-        .y_axis(y_ref);
-    match error_y {
-        Some(values) => {
-            trace = trace.error_y(
-                ErrorData::new(ErrorType::Data)
-                    .array(values)
-                    .visible(true)
-                    .color(color)
-                    .thickness(1.0)
-                    .width(0),
-            );
+/// 本实验的面板：四个各占一格。面板集合是各实验自己的事，这里只声明"我是谁、我占哪一格"。
+#[derive(Clone, Copy)]
+enum Panel {
+    Magnitude,
+    Phase,
+    Iq,
+    Norm,
+}
+
+impl Panel {
+    const ALL: [Panel; 4] = [Panel::Magnitude, Panel::Phase, Panel::Iq, Panel::Norm];
+
+    /// 本面板在网格里的格位（轴名与域都由它推出来，不在这里写）。
+    fn cell(self) -> Cell {
+        match self {
+            Self::Magnitude => Cell::at(0, 0),
+            Self::Phase => Cell::at(0, 1),
+            Self::Iq => Cell::at(1, 0),
+            Self::Norm => Cell::at(1, 1),
         }
-        None => {}
     }
-    trace
+}
+
+/// 某个面板的标题表（图名与两个轴标题各只出现一次）。
+fn titles(panel: Panel) -> Titles {
+    match panel {
+        Panel::Magnitude => Titles {
+            x: "freq (Hz)",
+            y: "|S21|",
+            name: "Magnitude",
+        },
+        Panel::Phase => Titles {
+            x: "freq (Hz)",
+            y: "Phase (rad)",
+            name: "Phase",
+        },
+        Panel::Iq => Titles {
+            x: "I",
+            y: "Q",
+            name: "IQ plane",
+        },
+        Panel::Norm => Titles {
+            x: "I",
+            y: "Q",
+            name: "Normalized",
+        },
+    }
 }
 
 /// 归一化面板的固定坐标范围（配 [`CENTER`] 用）：text 标注画在正中，缩放面板时不会漂。
@@ -536,8 +452,8 @@ const UNIT_RANGE: [f64; 2] = [0.0, 1.0];
 /// 面板正中。
 const CENTER: f64 = 0.5;
 
-/// 面板中央的纯文本标注（[`CENTER`]，配 x4/y4 的显式 [`UNIT_RANGE`]）。
-fn text_label(text: &str, x_ref: &'static str, y_ref: &'static str) -> Box<dyn Trace> {
+/// 面板中央的纯文本标注（[`CENTER`]，配显式 [`UNIT_RANGE`]）。
+fn text_label(text: &str, x_ref: &str, y_ref: &str) -> Box<dyn Trace> {
     let trace: Box<dyn Trace> = Scatter::new(vec![CENTER], vec![CENTER])
         .mode(Mode::Text)
         .text(text.to_string())
@@ -548,50 +464,19 @@ fn text_label(text: &str, x_ref: &'static str, y_ref: &'static str) -> Box<dyn T
     trace
 }
 
-/// 残差标记：金色小点、画在右轴（`y_ref`）上，hover 关闭——只让原始数据点响应 hover。
-fn residual_markers(
-    x: Vec<f64>,
-    y: Vec<f64>,
-    show_legend: bool,
-    x_ref: &'static str,
-    y_ref: &'static str,
-) -> Box<dyn Trace> {
-    let trace: Box<dyn Trace> = Scatter::new(x, y)
-        .name("Residual")
-        .legend_group("Residual")
-        .mode(Mode::Markers)
-        .marker(Marker::new().color(RESIDUAL_COLOR).size(5))
-        .show_legend(show_legend)
-        .x_axis(x_ref)
-        .y_axis(y_ref);
-    trace
-}
-
-fn curve(
-    x: Vec<f64>,
-    y: Vec<f64>,
-    name: &str,
-    color: &'static str,
-    width: f64,
-    show_legend: bool,
-    x_ref: &'static str,
-    y_ref: &'static str,
-) -> Box<dyn Trace> {
-    let trace: Box<dyn Trace> = Scatter::new(x, y)
-        .name(name)
-        .legend_group(name)
-        .mode(Mode::Lines)
-        .line(Line::new().color(color).width(width))
-        .show_legend(show_legend)
-        .hover_info(HoverInfo::Skip)
-        .x_axis(x_ref)
-        .y_axis(y_ref);
-    trace
-}
-
 /// 某面板的全部 trace（数据点 → 拟合线 → 残差），失败时自动只剩数据点。
-fn panel_traces(panel: Panel, data: &DataView, overlay: &FitOverlay) -> Vec<Box<dyn Trace>> {
-    let (x_ref, y_ref) = panel.axis_refs();
+///
+/// 形参:
+///     panel: 画哪一块
+///     x_ref: 本面板的 x 轴名（由 [`panels::layout`] 按格位给出，见 `axis_refs`）
+///     y_ref: 本面板的 y 轴名
+fn panel_traces(
+    panel: Panel,
+    x_ref: &str,
+    y_ref: &str,
+    data: &DataView,
+    overlay: &FitOverlay,
+) -> Vec<Box<dyn Trace>> {
     let mut traces: Vec<Box<dyn Trace>> = Vec::new();
     match panel {
         Panel::Magnitude => {
@@ -744,33 +629,12 @@ fn panel_traces(panel: Panel, data: &DataView, overlay: &FitOverlay) -> Vec<Box<
     traces
 }
 
-/// 2×2 网格的 paper 分数：左右列各 40%、上下排各 40%，其余留给轴标题
-/// （左列与下排同值只是设计巧合，两者各自可调）。
-const X_LEFT: [f64; 2] = [0.0, 0.40];
-const X_RIGHT: [f64; 2] = [0.62, 1.0];
-const Y_TOP: [f64; 2] = [0.58, 1.0];
-const Y_BOTTOM: [f64; 2] = [0.0, 0.40];
-
-/// 一个面板的标题：x 取列中点、y 取排顶边（`yanchor=Bottom` ⇒ 字落在面板上方），
-/// 字号/颜色对齐 plotly layout title 的默认外观（见 [`TITLE_SIZE`]）。
-fn panel_title(panel: Panel, x_domain: [f64; 2], y_domain: [f64; 2]) -> Annotation {
-    Annotation::new()
-        .text(panel.name())
-        .x((x_domain[0] + x_domain[1]) / 2.0)
-        .y(y_domain[1])
-        .x_ref("paper")
-        .y_ref("paper")
-        .x_anchor(Anchor::Center)
-        .y_anchor(Anchor::Bottom)
-        .show_arrow(false)
-        // font 未指定的属性（family）沿用 layout.font
-        .font(Font::new().size(TITLE_SIZE).color(TITLE_COLOR))
-}
-
-/// 2×2 网格布局；失败时在归一化面板上标注"无拟合结果"。
-fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
-    // 幅值/相位面板的值域（含拟合曲线），据此固定左右两轴的 range：
-    // 左轴 = 值域 ±5%，右轴 = 同 span、下移（残差与数据可直接目视比量级）。
+/// 本实验各面板的规格：标题 + 只有格位推不出来的轴选项。
+///
+/// 值域由拟合结果算出来后固定住（左轴 = 值域 ±5%，残差右轴 = 同 span 下移，两者可直接目视
+/// 比量级）；无拟合时归一化面板没有数据，改用一条 text trace 标注，坐标范围钉死在
+/// [`UNIT_RANGE`] 上，让"无拟合结果"落在面板正中且坐标框稳定。
+fn panel_specs(data: &DataView, overlay: &FitOverlay) -> Vec<PanelSpec> {
     let magnitude_bounds = match overlay.dense() {
         Some(dense) => {
             let fit_amp: Vec<f64> = dense.s21.iter().map(|z| z.norm()).collect();
@@ -784,167 +648,46 @@ fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
     };
     let magnitude_range = pad(magnitude_bounds);
     let phase_range = pad(phase_bounds);
-
-    // 2×2 用显式 domain + anchor 定位：左右列各 40%，上下排各 40%（留出轴标题余量）；
-    // 主数据用左轴（y / y2），残差用右轴叠加（overlaying y / y2 的 y5 / y6）。
-    let layout = Layout::new()
-        .font(figure_font())
-        .show_legend(true)
-        // 四块面板各挂一个标题（纸面坐标：列中点 / 排顶边），缩放窗口时跟着面板走
-        .annotations(vec![
-            panel_title(Panel::Magnitude, X_LEFT, Y_TOP),
-            panel_title(Panel::Phase, X_RIGHT, Y_TOP),
-            panel_title(Panel::Iq, X_LEFT, Y_BOTTOM),
-            panel_title(Panel::Norm, X_RIGHT, Y_BOTTOM),
-        ])
-        // 图例放四块图右侧顶部、上边距里（yanchor=Bottom 让图例往上长，而不是默认的
-        // 从 paper y=1 往下长——那样会压住相位面板右侧的残差轴刻度与标题）
-        .legend(
-            Legend::new()
-                .x(1.0)
-                .x_anchor(Anchor::Left)
-                .y(1.0)
-                .y_anchor(Anchor::Bottom),
-        )
-        .x_axis(axis_style(
-            Axis::new().domain(&X_LEFT).anchor("y").title(Panel::Magnitude.x_title()),
-        ))
-        .y_axis(at_range(
-            axis_style(
-                Axis::new().domain(&Y_TOP).anchor("x").title(Panel::Magnitude.y_title()),
-            ),
-            magnitude_range,
-        ))
-        .x_axis2(axis_style(
-            Axis::new().domain(&X_RIGHT).anchor("y2").title(Panel::Phase.x_title()),
-        ))
-        .y_axis2(at_range(
-            axis_style(Axis::new().domain(&Y_TOP).anchor("x2").title(Panel::Phase.y_title())),
-            phase_range,
-        ))
-        .x_axis3(axis_style(
-            Axis::new().domain(&X_LEFT).anchor("y3").title(Panel::Iq.x_title()),
-        ))
-        .y_axis3(axis_style(
-            Axis::new()
-                .domain(&Y_BOTTOM)
-                .anchor("x3")
-                .title(Panel::Iq.y_title())
-                .scale_anchor("x3"),
-        ))
-        .x_axis4(axis_style(
-            Axis::new().domain(&X_RIGHT).anchor("y4").title(Panel::Norm.x_title()),
-        ))
-        .y_axis4(axis_style(
-            Axis::new()
-                .domain(&Y_BOTTOM)
-                .anchor("x4")
-                .title(Panel::Norm.y_title())
-                .scale_anchor("x4"),
-        ))
-        // 残差叠加轴不画网格：否则与数据轴网格叠成双层虚线
-        .y_axis5(at_range(
-            axis_style(
-                Axis::new()
-                    .overlaying("y")
-                    .side(AxisSide::Right)
-                    .anchor("x")
-                    .title("Residual")
-                    .show_grid(false),
-            ),
-            residual_axis_range(magnitude_range),
-        ))
-        .y_axis6(at_range(
-            axis_style(
-                Axis::new()
-                    .overlaying("y2")
-                    .side(AxisSide::Right)
-                    .anchor("x2")
-                    .title("Residual (rad)")
-                    .show_grid(false),
-            ),
-            residual_axis_range(phase_range),
-        ));
-    match overlay {
-        FitOverlay::Some { .. } => layout,
-        // 失败时第四面板只有那条 text trace：给 x4/y4 固定 range [0,1]，
-        // 让"无拟合结果"落在面板正中且坐标框稳定。
-        FitOverlay::Absent { .. } => layout
-            .x_axis4(axis_style(
-                Axis::new()
-                    .domain(&X_RIGHT)
-                    .anchor("y4")
-                    .title(Panel::Norm.x_title())
-                    .range(UNIT_RANGE.to_vec()),
-            ))
-            .y_axis4(axis_style(
-                Axis::new()
-                    .domain(&Y_BOTTOM)
-                    .anchor("x4")
-                    .title(Panel::Norm.y_title())
-                    .range(UNIT_RANGE.to_vec())
-                    .scale_anchor("x4"),
-            )),
-    }
+    let (norm_x, norm_y) = match overlay {
+        // 有拟合时归一化面板照常自适应；失败时它只剩那条 text trace
+        FitOverlay::Some { .. } => (None, None),
+        FitOverlay::Absent { .. } => (Some(UNIT_RANGE), Some(UNIT_RANGE)),
+    };
+    let opts = [
+        AxisOpts {
+            y_range: magnitude_range,
+            residual: Some(ResidualAxis {
+                title: "Residual",
+                range: residual_axis_range(magnitude_range),
+            }),
+            ..AxisOpts::PLAIN
+        },
+        AxisOpts {
+            y_range: phase_range,
+            residual: Some(ResidualAxis {
+                title: "Residual (rad)",
+                range: residual_axis_range(phase_range),
+            }),
+            ..AxisOpts::PLAIN
+        },
+        AxisOpts {
+            equal_aspect: true,
+            ..AxisOpts::PLAIN
+        },
+        AxisOpts {
+            x_range: norm_x,
+            y_range: norm_y,
+            equal_aspect: true,
+            ..AxisOpts::PLAIN
+        },
+    ];
+    Panel::ALL
+        .iter()
+        .zip(opts)
+        .map(|(panel, opts)| PanelSpec {
+            cell: panel.cell(),
+            titles: titles(*panel),
+            opts,
+        })
+        .collect()
 }
-
-/// 一组序列的取值范围 [min, max]；全为空或无有限值时返回 None。
-fn value_bounds(lists: &[&[f64]]) -> Option<[f64; 2]> {
-    let mut low = f64::INFINITY;
-    let mut high = f64::NEG_INFINITY;
-    for list in lists {
-        for value in list.iter() {
-            if value.is_finite() {
-                low = low.min(*value);
-                high = high.max(*value);
-            }
-        }
-    }
-    match low <= high {
-        true => Some([low, high]),
-        false => None,
-    }
-}
-
-/// 数据轴相对值域多留的边距（占 span 的比例）。
-const AXIS_PAD: f64 = 0.05;
-
-/// 数据轴范围：值域 ±[`AXIS_PAD`]；退化（span ≤ 0）时交回 plotly 自适应。
-fn pad(bounds: Option<[f64; 2]>) -> Option<[f64; 2]> {
-    match bounds {
-        Some([low, high]) => {
-            let span = high - low;
-            match span > 0.0 {
-                true => Some([low - AXIS_PAD * span, high + AXIS_PAD * span]),
-                false => None,
-            }
-        }
-        None => None,
-    }
-}
-
-/// 残差 0 落在面板高度的这个比例处（右轴整体下移这么多）。
-const RESIDUAL_ZERO_AT: f64 = 0.12;
-
-/// 残差右轴范围：与数据轴同 span（同一 scale），整体下移使残差 0 落在面板 [`RESIDUAL_ZERO_AT`] 高度处。
-fn residual_axis_range(data_range: Option<[f64; 2]>) -> Option<[f64; 2]> {
-    match data_range {
-        Some([low, high]) => {
-            let span = high - low;
-            match span > 0.0 {
-                true => Some([-RESIDUAL_ZERO_AT * span, (1.0 - RESIDUAL_ZERO_AT) * span]),
-                false => None,
-            }
-        }
-        None => None,
-    }
-}
-
-/// 可选地给轴设置 range。
-fn at_range(axis: Axis, range: Option<[f64; 2]>) -> Axis {
-    match range {
-        Some([low, high]) => axis.range(vec![low, high]),
-        None => axis,
-    }
-}
-
