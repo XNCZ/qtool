@@ -351,12 +351,30 @@ pub(crate) const CARD_STYLE: &str = "\
 /* 可选标题：骑在上边线上（纵向中心与边线中心重合），白底盖掉被它压住的那段边线 */\
 .qtool-card-title{position:absolute;left:14px;top:-1.25px;transform:translateY(-50%);background:#ffffff;padding:0 8px;font-weight:700;font-size:16px;color:#1e293b}";
 
-/// 可选的卡片标题（没有就不输出，卡片上边线保持完整）。
+/// 可选的卡片标题：`text` 为空时返回空串 —— 相当于"有框但不出标题"，边框保持完整。
 pub(crate) fn card_title(text: &str) -> String {
-    format!(
-        "<div class=\"qtool-card-title\">{}</div>",
-        crate::utils::heatmap::escape_html(text)
-    )
+    match text.is_empty() {
+        true => String::new(),
+        false => format!(
+            "<div class=\"qtool-card-title\">{}</div>",
+            crate::utils::heatmap::escape_html(text)
+        ),
+    }
+}
+
+/// 可选外框：`Some(title)` ⇒ 把整段套进漫画卡片框（`title` 非空时骑在上边线上）；
+/// `None` ⇒ 原样返回（裸图）。
+///
+/// 报告函数都收一个 `frame: Option<&str>` 参数，由调用方决定要不要框、框上写什么 ——
+/// 嵌进气泡/浮层的行面板传 `None`（那里已经有卡片了），独立出图时传标题。
+pub(crate) fn framize(inner: &str, title: Option<&str>) -> String {
+    match title {
+        Some(text) => format!(
+            "<style>{CARD_STYLE}</style><div class=\"qtool-card\">{}{inner}</div>",
+            card_title(text)
+        ),
+        None => inner.to_string(),
+    }
 }
 
 const STYLE: &str = r#"<style>

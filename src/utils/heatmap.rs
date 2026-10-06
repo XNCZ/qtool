@@ -10,8 +10,8 @@
 //! 更新两条边线；x/y 轴用 `matches` 联动缩放。宿主页面仍需自行加载 plotly.js。
 
 use plotly::common::{
-    AxisSide, ColorBar, ColorScale, ColorScaleElement, ErrorData, ErrorType, HoverInfo, Marker,
-    Mode, Title,
+    AxisSide, ColorBar, ColorScale, ColorScaleElement, ErrorData, ErrorType, ExponentFormat, Font,
+    HoverInfo, Marker, Mode, Title,
 };
 use plotly::configuration::{Configuration, DoubleClick};
 use plotly::layout::{Axis, Layout, TicksDirection};
@@ -94,6 +94,8 @@ pub(crate) struct Grid2d<'a> {
     pub(crate) x_title: &'a str,
     pub(crate) y_title: &'a str,
     pub(crate) value_title: &'a str,
+    /// 这张图的名字（画在图的上方；与轴/色标标题分工：它说"这是哪一块图"）。
+    pub(crate) caption: &'a str,
     pub(crate) palette: Palette,
 }
 
@@ -137,7 +139,11 @@ pub(crate) fn heatmap(grid: &Grid2d<'_>, div_id: &str) -> String {
                 Palette::Turbo => turbo(),
                 Palette::RdBu => rdbu(),
             })
-            .color_bar(ColorBar::new().title(Title::with_text(grid.value_title)))
+            .color_bar(
+                ColorBar::new()
+                    .title(Title::with_text(grid.value_title))
+                    .exponent_format(ExponentFormat::SI),
+            )
             // 热图不弹默认的坐标浮标：读数由气泡（整行面板）承担。注意用 None 而不是
             // Skip —— None 只是不显示内容，hover / click 事件照常派发，气泡和"点一下
             // 取该行该列到边线图"都依赖它们；Skip 会把整条 trace 从 hover 里摘掉。
@@ -165,6 +171,8 @@ pub(crate) fn heatmap(grid: &Grid2d<'_>, div_id: &str) -> String {
     let plot_html = plot.to_inline_html(Some(plot_div_id.as_str()));
 
     let register_script = crate::utils::resize::register_script(div_id);
+    let caption = escape_html(grid.caption);
+    let caption_css = title_bar_style();
     let json_x = json_array(grid.x);
     let json_y = json_array(grid.y);
     let json_z = json_matrix(grid.z);
@@ -175,7 +183,8 @@ pub(crate) fn heatmap(grid: &Grid2d<'_>, div_id: &str) -> String {
 
     format!(
         r#"<div class="qtool-2d" id="{div_id}">
-{STYLE}
+{STYLE}{caption_css}
+<div class="qtool-2d-cap">{caption}</div>
 <div class="qtool-2d-plot">{plot_html}</div>
 {register_script}
 <script>
@@ -217,6 +226,7 @@ const X_RIGHT: [f64; 2] = [0.86, 1.0];
 
 fn layout(grid: &Grid2d<'_>) -> Layout {
     Layout::new()
+        .font(figure_font())
         .show_legend(false)
         // 热图轴显式贴着格子（首/末坐标各外扩半格）。不这么做的话，同子图里的折线
         // trace 会按 6% 余量参与算范围，把轴撑开、四周留下一圈空格子大小的白边。
@@ -345,15 +355,55 @@ fn slice_col(matrix: &[Vec<f64>], col: usize, height: usize) -> Vec<f64> {
 // 共享小工具（s21_plot 也复用）
 // =========================================================================
 
-/// 统一轴风格：轴线四边镜像、刻度朝内、隐藏零线、标题/刻度自动让出边距。
+/// 统一轴风格：轴线四边镜像、刻度朝内、隐藏零线、标题/刻度自动让出边距；大数用 SI 前缀。
 ///
 /// `automargin` 让容器变窄时 plotly 自己加大 margin，轴标题与刻度不会被裁掉。
+/// `exponent_format(SI)` 是必须显式设的：plotly 默认的 "B"（billions）会把 6.9 GHz
+/// 写成 `6.9B`，同一个页面里的线图若用 SI 就变成 `6.9G` —— 两处记号不一致。
 pub(crate) fn axis_style(axis: Axis) -> Axis {
     axis.mirror(true)
         .ticks(TicksDirection::Inside)
         .show_line(true)
         .zero_line(false)
         .auto_margin(true)
+        .exponent_format(ExponentFormat::SI)
+}
+
+// =========================================================================
+// 图名（HTML 图名条 与 plotly 的 title / annotation 共用同一组参数）
+// =========================================================================
+
+/// 图内文字的字体：与页面 CSS 同一套（`system-ui`），plotly 的标题/刻度/图例和 HTML
+/// 部分的字才是一套。
+pub(crate) const FONT_FAMILY: &str = "system-ui,'Segoe UI',sans-serif";
+
+/// 图名的字号与颜色：**对齐 plotly layout title 的默认外观**（17px、#444、常规字重、
+/// 居中），HTML 图名条与四面板的 annotation 都照这套来。
+pub(crate) const TITLE_SIZE: usize = 17;
+pub(crate) const TITLE_COLOR: &str = "#444";
+
+/// plotly 图的统一字体（layout 级：标题、轴标题、刻度、图例都吃它）。
+pub(crate) fn figure_font() -> Font {
+    Font::new().family(FONT_FAMILY)
+}
+
+/// 图名行（HTML 版的图名）的样式：热图的图名条（`.qtool-2d-cap`）与线图的图名行
+/// （`.qtool-line-title`）共用同一组字体/字号/颜色，只是外边距各自不同 —— CSS 读不到
+/// Rust 常量，所以在这里插值生成，避免两处各写一份。图名行里可以直接嵌控件（下拉框）。
+pub(crate) fn title_bar_style() -> String {
+    format!(
+        "<style>\
+         .qtool-2d .qtool-2d-cap{{text-align:center;font-family:{FONT_FAMILY};\
+         font-weight:400;font-size:{TITLE_SIZE}px;color:{TITLE_COLOR};margin:10px 0 6px}}\
+         .qtool-line-title{{text-align:center;font-family:{FONT_FAMILY};\
+         font-weight:400;font-size:{TITLE_SIZE}px;color:{TITLE_COLOR};margin:0 0 6px}}\
+         .qtool-line-title:empty{{display:none}}\
+         .qtool-line-title select{{font:inherit;color:inherit;background:transparent;\
+         border:1px solid transparent;border-radius:6px;padding:0 2px;cursor:pointer;\
+         appearance:none;-webkit-appearance:none;-moz-appearance:none}}\
+         .qtool-line-title select:hover,.qtool-line-title select:focus{{border-color:#cbd5e1;background:#ffffff}}\
+         </style>"
+    )
 }
 
 /// 统一的 plotly 交互配置。

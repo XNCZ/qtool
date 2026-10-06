@@ -9,15 +9,18 @@
 //! 自变量做线性去趋势，且数据与拟合曲线共用同一条趋势线（baseline 各自独立 detrend，
 //! 两条曲线可能整体错开；此处取同趋势以保证重合）。
 
-use crate::utils::heatmap::{escape_html, interactive_config, axis_style};
+use crate::utils::bubble::framize;
+use crate::utils::heatmap::{
+    TITLE_COLOR, TITLE_SIZE, axis_style, escape_html, figure_font, interactive_config,
+};
 use crate::superconductor::s21::{
     Complex64, JAC_NAMES, S21Error, S21Model, background_at, model_at, notch_at,
 };
 use crate::utils::{detrend, linear_detrend, unwrap_phase};
 use lmfit::ComplexResult;
 use plotly::Trace;
-use plotly::common::{Anchor, AxisSide, ErrorData, ErrorType, HoverInfo, Line, Marker, Mode};
-use plotly::layout::{Axis, Layout, Legend};
+use plotly::common::{Anchor, AxisSide, ErrorData, ErrorType, Font, HoverInfo, Line, Marker, Mode};
+use plotly::layout::{Annotation, Axis, Layout, Legend};
 use plotly::{Plot, Scatter};
 
 /// plotly.js 的 CDN 引入标签（版本与 plotly crate 内嵌的一致）；宿主页面放一次即可。
@@ -57,8 +60,8 @@ fn size_style() -> String {
     )
 }
 
-const DATA_COLOR: &str = "#663399";
-const FIT_COLOR: &str = "#d62728";
+pub(crate) const DATA_COLOR: &str = "#663399";
+pub(crate) const FIT_COLOR: &str = "#d62728";
 const RESIDUAL_COLOR: &str = "#eab308";
 
 /// 把一条 S21 线渲染成自包含的 HTML div。
@@ -71,6 +74,8 @@ const RESIDUAL_COLOR: &str = "#eab308";
 ///     fit: 拟合结果；`Ok` 画拟合曲线（`success == false` 时表内标注未收敛），
 ///          `Err` 只画数据点、表位置显示错误文本、归一化面板留空
 ///     div_id: 外层 div 的 HTML id（一页多图时由调用方保证唯一）
+///     frame: 可选外框：`Some(title)` 套上卡片框（`title` 非空时骑在上边线上），
+///            `None` 裸图。嵌进气泡/浮层的行面板传 `None`
 ///
 /// 返回值:
 ///     自包含的 `<div class="qtool-s21">` 片段（图 + 参数表 + 页脚）；
@@ -81,6 +86,7 @@ pub fn s21_fit_plot_div(
     sigma: Option<&[f64]>,
     fit: Result<&ComplexResult<S21Model>, &S21Error>,
     div_id: &str,
+    frame: Option<&str>,
 ) -> String {
     let data = DataView::new(freqs_hz, iq, sigma);
     let overlay = overlay(fit, freqs_hz, &data);
@@ -103,7 +109,7 @@ pub fn s21_fit_plot_div(
         env!("CARGO_PKG_VERSION")
     ));
     html.push_str("</div>\n");
-    html
+    framize(&html, frame)
 }
 
 /// 拟合四面板的 Plotly 图对象（不含标题与参数表）。
@@ -184,6 +190,16 @@ impl Panel {
             Panel::Phase => "Phase (rad)",
             Panel::Iq => "Q",
             Panel::Norm => "Q",
+        }
+    }
+
+    /// 面板标题（画在该面板正上方；与轴标题分工：标题说"这是哪一块"，轴标题说"画的是什么量"）。
+    fn name(self) -> &'static str {
+        match self {
+            Panel::Magnitude => "Magnitude",
+            Panel::Phase => "Phase",
+            Panel::Iq => "IQ plane",
+            Panel::Norm => "Normalized",
         }
     }
 }
@@ -477,7 +493,7 @@ fn describe(name: &str) -> &'static str {
 }
 
 /// 参数的单位后缀：一律 SI 基本单位（频率 Hz、时间 s、相位 rad），量纲为一的不带单位。
-fn unit_of(name: &str) -> &'static str {
+pub(crate) fn unit_of(name: &str) -> &'static str {
     match name {
         "fr" | "kappa_ex" => " Hz",
         "tau" => " s",
@@ -767,6 +783,22 @@ const X_RIGHT: [f64; 2] = [0.62, 1.0];
 const Y_TOP: [f64; 2] = [0.58, 1.0];
 const Y_BOTTOM: [f64; 2] = [0.0, 0.40];
 
+/// 一个面板的标题：x 取列中点、y 取排顶边（`yanchor=Bottom` ⇒ 字落在面板上方），
+/// 字号/颜色对齐 plotly layout title 的默认外观（见 [`TITLE_SIZE`]）。
+fn panel_title(panel: Panel, x_domain: [f64; 2], y_domain: [f64; 2]) -> Annotation {
+    Annotation::new()
+        .text(panel.name())
+        .x((x_domain[0] + x_domain[1]) / 2.0)
+        .y(y_domain[1])
+        .x_ref("paper")
+        .y_ref("paper")
+        .x_anchor(Anchor::Center)
+        .y_anchor(Anchor::Bottom)
+        .show_arrow(false)
+        // font 未指定的属性（family）沿用 layout.font
+        .font(Font::new().size(TITLE_SIZE).color(TITLE_COLOR))
+}
+
 /// 2×2 网格布局；失败时在归一化面板上标注"无拟合结果"。
 fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
     // 幅值/相位面板的值域（含拟合曲线），据此固定左右两轴的 range：
@@ -788,7 +820,15 @@ fn layout(overlay: &FitOverlay, data: &DataView) -> Layout {
     // 2×2 用显式 domain + anchor 定位：左右列各 40%，上下排各 40%（留出轴标题余量）；
     // 主数据用左轴（y / y2），残差用右轴叠加（overlaying y / y2 的 y5 / y6）。
     let layout = Layout::new()
+        .font(figure_font())
         .show_legend(true)
+        // 四块面板各挂一个标题（纸面坐标：列中点 / 排顶边），缩放窗口时跟着面板走
+        .annotations(vec![
+            panel_title(Panel::Magnitude, X_LEFT, Y_TOP),
+            panel_title(Panel::Phase, X_RIGHT, Y_TOP),
+            panel_title(Panel::Iq, X_LEFT, Y_BOTTOM),
+            panel_title(Panel::Norm, X_RIGHT, Y_BOTTOM),
+        ])
         // 图例放四块图右侧顶部、上边距里（yanchor=Bottom 让图例往上长，而不是默认的
         // 从 paper y=1 往下长——那样会压住相位面板右侧的残差轴刻度与标题）
         .legend(
