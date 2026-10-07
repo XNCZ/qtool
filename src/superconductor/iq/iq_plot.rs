@@ -841,14 +841,14 @@ fn params_body(stats: &IqStats) -> String {
         for slot in 0..LEVELS.len() {
             push(
                 format!("|{index}> area {}%", (LEVELS[slot] * 100.0).round()),
-                "area holding this share of the shots, taken densest-first, a.u.²",
+                "area holding this share of the shots, densest-first, a.u.²",
                 format!("{:.4e}", state.areas[slot]),
             );
         }
         for slot in 0..LEVELS.len() {
             push(
                 format!("|{index}> r {}%", (LEVELS[slot] * 100.0).round()),
-                "radius of a circle with the same area; r68/sigma = 1.51, r95/sigma = 2.45, r99/sigma = 3.03 for a Gaussian",
+                "radius of a circle with the same area, a.u.",
                 format!("{:.4}", state.radii[slot]),
             );
         }
@@ -862,13 +862,13 @@ fn params_body(stats: &IqStats) -> String {
         );
         push(
             format!("{tag} SNR"),
-            "separation / sqrt(sigma_p∥² + sigma_q∥²); each sigma is that cloud's second-moment width along the centre line (the ∥ means along the line)",
+            "separation / √(σ_p∥² + σ_q∥²)",
             format!("{:.3}", pair.snr),
         );
         // 阈值对外就是 IQ 平面上的复数：判别边界与两中心连线的交点（与图上刻度文字同一套坐标）
         push(
             format!("{tag} threshold"),
-            "the cut point on the line joining the two state centres",
+            "cut point on the line joining the two centres",
             format!("{:.4}", pair.threshold),
         );
         push(
@@ -878,7 +878,7 @@ fn params_body(stats: &IqStats) -> String {
         );
         push(
             format!("{tag} AUC"),
-            "Mann-Whitney statistic: the sample estimate of P(second state > first state), ties half",
+            "Mann-Whitney statistic, P(second state > first state)",
             format!("{:.5}", pair.auc),
         );
     }

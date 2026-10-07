@@ -249,7 +249,7 @@ fn param_rows(fit: &RamseyFit) -> Vec<ParamRow<'static>> {
         (
             "T2*",
             "decay",
-            "dephasing time, the envelope's time constant",
+            "dephasing time",
             model.decay,
             4,
             true,
@@ -257,7 +257,7 @@ fn param_rows(fit: &RamseyFit) -> Vec<ParamRow<'static>> {
         (
             "frequency",
             "frequency",
-            "fringe frequency (Δf + residual detuning)",
+            "fringe frequency",
             model.frequency,
             6,
             true,
@@ -273,12 +273,12 @@ fn param_rows(fit: &RamseyFit) -> Vec<ParamRow<'static>> {
         (
             "amplitude",
             "amplitude",
-            "peak amplitude of the fringe term (a negative sign is a convention: −A with phase+π is the same curve)",
+            "peak amplitude of the fringe term",
             model.amplitude,
             4,
             false,
         ),
-        ("phase", "phase", "fringe phase, rad", model.phase, 4, false),
+        ("phase", "phase", "fringe phase (rad)", model.phase, 4, false),
     ];
     let render = |value: f64, digits: usize, scientific: bool| match scientific {
         true => format!("{value:.digits$e}"),

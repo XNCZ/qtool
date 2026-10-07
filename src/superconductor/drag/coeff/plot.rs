@@ -1,28 +1,28 @@
-//! DRAG 幅度扫描的自包含 HTML div 渲染（feature = "plot"）。
+//! DRAG 系数扫描的自包含 HTML div 渲染（feature = "plot"）。
 //!
-//! 一次调用产出四面板图（|S21|、相位、IQ 平面、P1）+ 参数表 + 页脚的 HTML 片段，可直接插入
-//! 汇总报表 / iframe / Jupyter。图形由 plotly.js 在浏览器端渲染，本模块只生成 `<div>` 与
-//! `Plotly.newPlot` 调用（[`plotly::Plot::to_inline_html`]）；宿主页面需自行加载 plotly.js，
-//! 可用 [`PLOTLY_JS_CDN`] 一行引入。
+//! 一次调用产出四面板图（|S21|、相位、IQ 平面、P1）+ 参数线图 + 参数表 + 页脚的 HTML 片段，
+//! 可直接插入汇总报表 / iframe / Jupyter。图形由 plotly.js 在浏览器端渲染，本模块只生成
+//! `<div>` 与 `Plotly.newPlot` 调用（[`plotly::Plot::to_inline_html`]）；宿主页面需自行加载
+//! plotly.js，可用 [`PLOTLY_JS_CDN`] 一行引入。
 //!
-//! 与别的报告最大的不同：**一张图里放的是整条升阶链**（任意多阶），不是单条扫描。
+//! 版式与幅度扫描那份（`drag::amplitude::plot`）逐格相同，只有两处不一样：那一份的最低阶是
+//! 余弦、最高阶才是谷，这里**每一阶都是谷**；横轴是 DRAG 系数。整条升阶链一起画：
 //!
 //! - **四个面板都按阶铺**，颜色就是阶数的编码（[`order_color`]）：同一个阶在四个面板里同名同色，
 //!   图例**一阶一条**——同名 trace 归一个 legendgroup，点一次就开关这一阶在全图的所有点与线。
-//!   （baseline 那边 |S21| 与相位只画最高阶、IQ 只画最低阶、图例里另有一条 "Data"，这里按
-//!   "一张图读整条链"的口径统一了。）
 //! - **P1 面板**各阶叠自己的拟合线——低阶铺得开、高阶收得窄，一眼看得出窗口是怎么一步步收到
 //!   谷底上的；标定值画一条灰虚线。
-//! - **IQ 平面**仍按 P1 上色（|0> 端蓝、|1> 端红），阶数只压在**深浅**上（[`graded`]）：这一格
-//!   的颜色有两个维度——色相读 P1、深浅读阶数；投影轴与两个参考点照画。
+//! - **IQ 平面**仍按 P1 上色（|0> 端蓝、|1> 端红），阶数只压在**深浅**上（[`graded`]）。
+//! - **图下的参数线图**（[`param_panel`]）：下拉框换谷的四个参数，横轴是阶数 n——低阶到高阶
+//!   谷怎么变窄、谷心怎么收敛，一条线看全。
 //!
-//! 图下参数表**一阶一行**：读数（最低阶是余弦的首个极小 `1/freq`，升阶是谷心）与它的标准误；
-//! 某阶没拟合出来时那一行的值写 `—`，原因汇总在表下的提示里（warning 样式）。
+//! 图下参数表**逐阶列出它的全部模型参数**。注意表里的 `centre` 是**相位误差最小**的那一点，
+//! 而标定表里该记的泄露最优是它的**两倍**（见 [`super::valley`]）——这一格只报谷心，那一步换算
+//! 留在驱动那一层，别在这儿替它乘。
 //!
 //! P1 面板没有残差轴：各阶的残差不在同一个尺度上，一条右轴代表不了谁。
 
-use crate::superconductor::drag::amplitude::factor_n::{FactorNError, FactorNFit, Valley};
-use crate::superconductor::drag::amplitude::factor_one::{CosWave, FactorOneError, FactorOneFit};
+use crate::superconductor::drag::coeff::valley::{Valley, ValleyError, ValleyFit};
 use crate::superconductor::{StateCenters, p1};
 use crate::utils::bubble::framize;
 use crate::utils::heatmap::{
@@ -76,26 +76,23 @@ impl Panel {
 /// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）；尺寸相关的两条
 /// 规则由 [`crate::utils::panels::size_style`] 单独生成。
 const STYLE: &str = r#"<style>
-.qtool-dragamp{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
+.qtool-dragcoeff{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
 /* 高度跟着宽度走（比例即网格的设计宽高） */
-.qtool-dragamp .qtool-plot{width:100%;max-height:85vh}
+.qtool-dragcoeff .qtool-plot{width:100%;max-height:85vh}
 /* 参数线图：比四面板图扁，图名行与下拉框的样式走 utils::heatmap::title_bar_style */
-.qtool-dragamp .qtool-line{margin-top:14px}
-.qtool-dragamp .qtool-line-plot{width:100%;aspect-ratio:18/5;max-height:60vh}
+.qtool-dragcoeff .qtool-line{margin-top:14px}
+.qtool-dragcoeff .qtool-line-plot{width:100%;aspect-ratio:18/5;max-height:60vh}
 /* plotly 自带工具栏固定贴在容器右上角（top:2px），上边距压小后就会压在图上 —— 挪到图名行
    右端（图名行高约 21px + 6px 外边距，工具栏高 19px，居中即 -26px） */
-.qtool-dragamp .qtool-line-plot .modebar{top:-26px}
-.qtool-dragamp .qtool-error{margin-top:6px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:13px}
-.qtool-dragamp .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
+.qtool-dragcoeff .qtool-line-plot .modebar{top:-26px}
+.qtool-dragcoeff .qtool-error{margin-top:6px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:13px}
+.qtool-dragcoeff .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
 </style>"#;
 
-/// 参数线图的下拉框里可画的那四项：`(参数名, 显示名)`，顺序与 [`OrderScan::valley_series`] 一致。
-///
-/// 只列**谷**的参数。最低阶是余弦，`freq`/`a_pi` 是它独有的；而 `amp` 两边都有、含义却不同
-/// （余弦的半幅 vs 谷的深度），把同名的凑成一条线等于把两件事画成一条。
+/// 参数线图的下拉框里可画的四项：`(参数名, 显示名)`，顺序与 [`OrderScan::parameters`] 一致。
 const VALLEY_PARAMS: [(&str, &str); 4] = [
-    ("centre", "centre (a.u.)"),
-    ("fwhm", "fwhm (a.u.)"),
+    ("centre", "centre (coeff)"),
+    ("fwhm", "fwhm (coeff)"),
     ("amp", "amp (P1)"),
     ("offset", "offset (P1)"),
 ];
@@ -118,42 +115,12 @@ const PARAM_PLOT_TOP: usize = 10;
 pub struct OrderScan<'a> {
     /// 脉冲对数：这一阶的标号，也是颜色深浅的次序（越深越高阶）
     pub pairs: usize,
-    /// 该阶扫过的幅度轴 (n,)
-    pub amps: &'a [f64],
+    /// 该阶扫过的 DRAG 系数轴 (n,)
+    pub coeffs: &'a [f64],
     /// 该阶的平均复数 IQ (n,)
     pub iq: &'a [Complex64],
-    /// 该阶的拟合结果：最低阶是余弦，升阶是谷
-    pub fit: OrderFit<'a>,
-}
-
-/// 某阶拟合出来的线型。
-pub enum OrderFit<'a> {
-    /// 最低阶（`pairs = 1`）：零驱动处锚在 |0> 上的余弦，[`crate::superconductor::drag::amplitude::factor_one_fit`]
-    Cosine(Result<&'a FactorOneFit, &'a FactorOneError>),
-    /// 升阶（`pairs ≥ 2`）：谷的洛伦兹，[`crate::superconductor::drag::amplitude::factor_n_fit`]
-    Valley(Result<&'a FactorNFit, &'a FactorNError>),
-}
-
-/// 拟合出来的线型本身，只为一件事存在：在密集网格上重算一遍拟合线。
-enum OrderModel<'a> {
-    Cosine(&'a CosWave),
-    Valley(&'a Valley),
-}
-
-impl OrderModel<'_> {
-    /// 在线型上求值。
-    ///
-    /// 形参:
-    ///     amps: 要求值的网格 (n,)
-    ///
-    /// 返回值:
-    ///     线型取值 (n,)
-    fn at(&self, amps: &[f64]) -> Vec<f64> {
-        match self {
-            Self::Cosine(model) => model.at(amps),
-            Self::Valley(model) => model.at(amps),
-        }
-    }
+    /// 该阶的谷拟合结果（每一阶都拟谷，最低阶也不例外）
+    pub fit: Result<&'a ValleyFit, &'a ValleyError>,
 }
 
 impl<'a> OrderScan<'a> {
@@ -166,35 +133,22 @@ impl<'a> OrderScan<'a> {
     ///     P1 曲线 (n,)
     fn prob(&self, states: &StateCenters) -> Vec<f64> {
         match &self.fit {
-            OrderFit::Cosine(Ok(fit)) => fit.p1.clone(),
-            OrderFit::Cosine(Err(_)) => p1(self.iq, Some(states)),
-            OrderFit::Valley(Ok(fit)) => fit.p1.clone(),
-            OrderFit::Valley(Err(_)) => p1(self.iq, Some(states)),
+            Ok(fit) => fit.p1.clone(),
+            Err(_) => p1(self.iq, Some(states)),
         }
     }
 
     /// 该阶拟合出来的线型；没有拟合时为 None。
-    fn model(&self) -> Option<OrderModel<'a>> {
+    fn model(&self) -> Option<&'a Valley> {
         match &self.fit {
-            OrderFit::Cosine(Ok(fit)) => Some(OrderModel::Cosine(&fit.result.model)),
-            OrderFit::Cosine(Err(_)) => None,
-            OrderFit::Valley(Ok(fit)) => Some(OrderModel::Valley(&fit.result.model)),
-            OrderFit::Valley(Err(_)) => None,
-        }
-    }
-
-    /// 这一阶是不是**谷**那一档：最低阶（余弦）不是，其余都是（成败不论）。
-    fn is_valley(&self) -> bool {
-        match &self.fit {
-            OrderFit::Cosine(_) => false,
-            OrderFit::Valley(_) => true,
+            Ok(fit) => Some(&fit.result.model),
+            Err(_) => None,
         }
     }
 
     /// 这一阶的谷参数（`centre`/`fwhm`/`amp`/`offset`），顺序与 [`VALLEY_PARAMS`] 一致。
     ///
-    /// 没拟合出来、或这一阶压根不是谷时为空——前者是"数据缺一档"，后者是"这一档不属于这张图"，
-    /// 由调用方按 [`OrderScan::is_valley`] 区分。
+    /// 没拟合出来时为空——调用方按 [`OrderScan::failure`] 取原因。
     ///
     /// 形参: 无
     ///
@@ -202,8 +156,7 @@ impl<'a> OrderScan<'a> {
     ///     四个参数的值与标准误
     fn valley_series(&self) -> Option<[(f64, Option<f64>); 4]> {
         match &self.fit {
-            OrderFit::Cosine(_) => None,
-            OrderFit::Valley(Ok(fit)) => {
+            Ok(fit) => {
                 let model = &fit.result.model;
                 Some([
                     (model.centre, stderr_of(&fit.result, "centre")),
@@ -212,41 +165,21 @@ impl<'a> OrderScan<'a> {
                     (model.offset, stderr_of(&fit.result, "offset")),
                 ])
             }
-            OrderFit::Valley(Err(_)) => None,
+            Err(_) => None,
         }
     }
 
     /// 这一阶的模型参数：`(参数名, 说明, 值, 标准误)`，顺序即线型里的字段序。
     ///
-    /// 每一阶把它的全部参数都列出来，不是只给读数——读数（余弦的 `a_pi`、谷的 `centre`）是其中
-    /// 一行，说明里标了 `reading`。标准误由 lmfit 从协方差给，拿不到时是 None；没有拟合时为空。
+    /// 谷心那一行的说明里点了标定口径：**表里该记的是它的两倍**（泄露最优），别照抄。
+    ///
+    /// 形参: 无
+    ///
+    /// 返回值:
+    ///     参数表各行，没有拟合时为空
     fn parameters(&self) -> Vec<(&'static str, &'static str, f64, Option<f64>)> {
         match &self.fit {
-            OrderFit::Cosine(Ok(fit)) => {
-                let model = &fit.result.model;
-                vec![
-                    (
-                        "freq",
-                        "oscillation frequency (1/amp)",
-                        model.freq,
-                        stderr_of(&fit.result, "freq"),
-                    ),
-                    (
-                        "amp",
-                        "half amplitude of the cosine",
-                        model.amp,
-                        stderr_of(&fit.result, "amp"),
-                    ),
-                    (
-                        "a_pi",
-                        "π amplitude, 1/freq",
-                        model.a_pi,
-                        stderr_of(&fit.result, "a_pi"),
-                    ),
-                ]
-            }
-            OrderFit::Cosine(Err(_)) => Vec::new(),
-            OrderFit::Valley(Ok(fit)) => {
+            Ok(fit) => {
                 let model = &fit.result.model;
                 vec![
                     (
@@ -275,24 +208,20 @@ impl<'a> OrderScan<'a> {
                     ),
                 ]
             }
-            OrderFit::Valley(Err(_)) => Vec::new(),
+            Err(_) => Vec::new(),
         }
     }
 
     /// 拟合失败时的原因；有拟合时为 None。
     fn failure(&self) -> Option<String> {
         match &self.fit {
-            OrderFit::Cosine(Ok(_)) => None,
-            OrderFit::Cosine(Err(err)) => Some(err.to_string()),
-            OrderFit::Valley(Ok(_)) => None,
-            OrderFit::Valley(Err(err)) => Some(err.to_string()),
+            Ok(_) => None,
+            Err(err) => Some(err.to_string()),
         }
     }
 }
 
 /// 某个参数的标准误；缺失或非有限时返回 None。
-///
-/// 两种线型的拟合结果都是 [`ModelResult`]，所以这里对模型类型泛化一次，参数表两条分支共用。
 ///
 /// 形参:
 ///     result: 某条拟合结果
@@ -325,11 +254,12 @@ fn hex(channels: [u8; 3]) -> String {
     )
 }
 
-/// 阶序深浅的蓝：`depth` 0 取浅端、1 取深端（baseline `order_colors` 取样区间的两端）。
+/// 阶序深浅的**品红**：`depth` 0 取浅端、1 取深端。
 ///
-/// 端点取 plotly "Blues" 在 0.35 与 0.95 上的两个样：浅端不取纯白（白底上看不见），深端留一点
-/// 余量。颜色按**阶序位置**插出来，不按 `pairs` 取模——阶数再多也不会绕回浅色，"越深越高阶"
-/// 这一维始终读得出来（baseline 那张写死的三色表就是在这上面翻过车）。
+/// 三个 DRAG 实验各用一族色系（幅度蓝、系数品红、失谐大地色），同一份报表里把三条链摆在一起
+/// 也一眼分得开。浅端不取纯白（白底上看不见），深端留一点余量。颜色按**阶序位置**插出来，不按
+/// `pairs` 取模——阶数再多也不会绕回浅色，"越深越高阶"这一维始终读得出来（baseline 那张写死的
+/// 三色表就是在这上面翻过车）。
 ///
 /// 形参:
 ///     depth: 该阶在整条链里的位置，0 最低阶、1 最高阶（只有一阶时取 0）
@@ -337,8 +267,8 @@ fn hex(channels: [u8; 3]) -> String {
 /// 返回值:
 ///     `#rrggbb`
 fn order_color(depth: f64) -> String {
-    const LIGHT: [f64; 3] = [0x9e as f64, 0xca as f64, 0xe1 as f64];
-    const DARK: [f64; 3] = [0x08 as f64, 0x30 as f64, 0x6b as f64];
+    const LIGHT: [f64; 3] = [0xf2 as f64, 0xa9 as f64, 0xd5 as f64];
+    const DARK: [f64; 3] = [0x5e as f64, 0x0f as f64, 0x47 as f64];
     let mut channels = [0_u8; 3];
     for (slot, (light, dark)) in channels.iter_mut().zip(LIGHT.iter().zip(DARK.iter())) {
         *slot = (light + (dark - light) * depth).round().clamp(0.0, 255.0) as u8;
@@ -380,16 +310,16 @@ fn graded(rgb: [f64; 3], depth: f64) -> String {
 ///
 /// 形参:
 ///     orders: 各阶的扫描与拟合，顺序不限（内部按 `pairs` 升序排，颜色跟着排序位置走）
-///     chosen: 标定值（P1 面板上那条竖虚线），与幅度轴同单位——由调用方决定取哪一阶的读数，
-///             本函数不去猜（`drag_coeff` 那一类实验的标定值就不是谷心本身）
+///     chosen: 标定值（P1 面板上那条竖虚线），与系数轴同单位——由调用方决定取哪一阶的读数，
+///             本函数不去猜（要按泄露最优写表就传两倍谷心，那一步在驱动那一层做）
 ///     states: 各态标定中心；须与各阶拟合用的是同一组，否则 P1 面板上画的点不是被拟合的那些
 ///     div_id: 外层 div 的 HTML id（一页多图时由调用方保证唯一）
 ///     frame: 可选外框：`Some(title)` 套上卡片框（`title` 非空时骑在上边线上），`None` 裸图
 ///
 /// 返回值:
-///     自包含的 `<div class="qtool-dragamp">` 片段（图 + 参数表 + 页脚）；宿主页面需自行加载
-///     plotly.js（见 [`PLOTLY_JS_CDN`]）
-pub fn drag_amplitude_plot_div(
+///     自包含的 `<div class="qtool-dragcoeff">` 片段（图 + 参数线图 + 参数表 + 页脚）；
+///     宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
+pub fn drag_coeff_plot_div(
     orders: &[OrderScan<'_>],
     chosen: f64,
     states: &StateCenters,
@@ -409,7 +339,7 @@ pub fn drag_amplitude_plot_div(
         order_table(&layers)
     );
     let html = report_div(
-        "qtool-dragamp",
+        "qtool-dragcoeff",
         &format!("{STYLE}{}", title_bar_style()),
         div_id,
         &GRID_2X2,
@@ -489,7 +419,7 @@ fn panel_traces(
                 let magnitude: Vec<f64> = layer.order.iq.iter().map(|z| z.norm()).collect();
                 let name = format!("N={}", layer.order.pairs);
                 traces.push(series(
-                    layer.order.amps.to_vec(),
+                    layer.order.coeffs.to_vec(),
                     magnitude,
                     name.as_str(),
                     order_color(layer.depth).as_str(),
@@ -506,7 +436,7 @@ fn panel_traces(
                     unwrap_phase(&layer.order.iq.iter().map(|z| z.arg()).collect::<Vec<f64>>());
                 let name = format!("N={}", layer.order.pairs);
                 traces.push(series(
-                    layer.order.amps.to_vec(),
+                    layer.order.coeffs.to_vec(),
                     phase,
                     name.as_str(),
                     order_color(layer.depth).as_str(),
@@ -561,7 +491,7 @@ fn panel_traces(
             for layer in layers {
                 let name = format!("N={}", layer.order.pairs);
                 traces.push(series(
-                    layer.order.amps.to_vec(),
+                    layer.order.coeffs.to_vec(),
                     layer.prob.clone(),
                     name.as_str(),
                     order_color(layer.depth).as_str(),
@@ -570,7 +500,7 @@ fn panel_traces(
                     y_ref,
                 ));
                 match layer.order.model() {
-                    Some(model) => match dense_grid(layer.order.amps) {
+                    Some(model) => match dense_grid(layer.order.coeffs) {
                         Some(dense) => {
                             let values = model.at(&dense);
                             traces.push(curve(
@@ -644,16 +574,16 @@ fn panel_specs() -> Vec<PanelSpec> {
 
 /// 某个面板的标题表（图名与两个轴标题各只出现一次）。
 ///
-/// 横轴是扫描量——XY 驱动幅度，三个与它同轴的面板写法一致；IQ 面板是 I/Q。
+/// 横轴是扫描量——DRAG 系数（无量纲），三个与它同轴的面板写法一致；IQ 面板是 I/Q。
 fn titles(panel: Panel) -> Titles {
     match panel {
         Panel::Magnitude => Titles {
-            x: "XY amp (a.u.)",
+            x: "DRAG coeff",
             y: "|S21|",
             name: "Magnitude",
         },
         Panel::Phase => Titles {
-            x: "XY amp (a.u.)",
+            x: "DRAG coeff",
             y: "Phase (rad)",
             name: "Phase",
         },
@@ -663,7 +593,7 @@ fn titles(panel: Panel) -> Titles {
             name: "IQ plane",
         },
         Panel::Norm => Titles {
-            x: "XY amp (a.u.)",
+            x: "DRAG coeff",
             y: "P1",
             name: "P1 (all orders)",
         },
@@ -709,21 +639,21 @@ struct ParamSeries {
 /// 逐阶收集谷的四个参数。
 ///
 /// 形参:
-///     valley: 谷那一档的逐阶素材（最低阶的余弦已在外面滤掉），已按阶数升序
+///     layers: 逐阶素材，已按阶数升序
 ///
 /// 返回值:
 ///     四条曲线，顺序即 [`VALLEY_PARAMS`]
-fn param_series(valley: &[&Layer<'_>]) -> Vec<ParamSeries> {
+fn param_series(layers: &[Layer<'_>]) -> Vec<ParamSeries> {
     let mut series: Vec<ParamSeries> = VALLEY_PARAMS
         .iter()
         .map(|(name, label)| ParamSeries {
             name,
             label,
-            value: Vec::with_capacity(valley.len()),
-            stderr: Vec::with_capacity(valley.len()),
+            value: Vec::with_capacity(layers.len()),
+            stderr: Vec::with_capacity(layers.len()),
         })
         .collect();
-    for layer in valley {
+    for layer in layers {
         match layer.order.valley_series() {
             Some(items) => {
                 for (item, (value, stderr)) in series.iter_mut().zip(items) {
@@ -754,20 +684,16 @@ fn param_series(valley: &[&Layer<'_>]) -> Vec<ParamSeries> {
 ///     layers: 逐阶素材，已按阶数升序
 ///
 /// 返回值:
-///     自包含的线图面板（图名行 + 图 + 切换脚本 + 缩放注册）；没有谷那一档时返回空串
+///     自包含的线图面板（图名行 + 图 + 切换脚本 + 缩放注册）；没有阶时返回空串
 fn param_panel(div_id: &str, layers: &[Layer<'_>]) -> String {
-    let valley: Vec<&Layer<'_>> = layers
-        .iter()
-        .filter(|layer| layer.order.is_valley())
-        .collect();
-    if valley.is_empty() {
+    if layers.is_empty() {
         return String::new();
     }
-    let orders: Vec<f64> = valley
+    let orders: Vec<f64> = layers
         .iter()
         .map(|layer| layer.order.pairs as f64)
         .collect();
-    let series = param_series(&valley);
+    let series = param_series(layers);
     let first = match series.first() {
         Some(item) => item,
         None => return String::new(),
@@ -831,7 +757,7 @@ fn param_panel(div_id: &str, layers: &[Layer<'_>]) -> String {
         .collect();
     // 图名在 HTML 里（plotly 的 title 放不下 <select>），所以这里只改 y 轴标题。
     // 下拉框宽度按当前选项实测文字宽度来定 —— 原生 select 会撑到最宽的那个选项，
-    // 那样"centre (a.u.)"和"vs order n"之间会空出一大截，看着不像一个标题。
+    // 那样"centre (coeff)"和"vs order n"之间会空出一大截，看着不像一个标题。
     let script = format!(
         r#"<script>
 (function () {{
@@ -872,9 +798,9 @@ fn param_panel(div_id: &str, layers: &[Layer<'_>]) -> String {
 
 /// 参数表：**逐阶列出它的全部模型参数**（名字前缀 `N={pairs}`），各带标准误。
 ///
-/// 读数（余弦的 `a_pi`、谷的 `centre`）是其中一行，说明里标了 `reading`——表里既有"这一阶量出
-/// 了什么"，也有它是怎么量出来的（周期、半高全宽、深度、基线）。没拟合出来的阶那一行写 `—`，
-/// 原因汇总在表下的提示里（照其余报告的口径：求解器出了状况就该在页面上看得见，不能只在日志里）。
+/// 谷心那一行的说明里点了标定口径（泄露最优在它的两倍处），免得有人照抄这一列写进标定表。
+/// 没拟合出来的阶那一行写 `—`，原因汇总在表下的提示里（照其余报告的口径：求解器出了状况就该
+/// 在页面上看得见，不能只在日志里）。
 ///
 /// 形参:
 ///     layers: 逐阶素材，已按阶数升序

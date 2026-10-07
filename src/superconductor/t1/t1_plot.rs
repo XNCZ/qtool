@@ -234,7 +234,7 @@ fn param_rows(fit: &T1Fit) -> Vec<ParamRow<'static>> {
         (
             "T1",
             "t1",
-            "energy relaxation time, the quantity this scan produces",
+            "energy relaxation time",
             model.t1,
             4,
             true,
@@ -242,7 +242,7 @@ fn param_rows(fit: &T1Fit) -> Vec<ParamRow<'static>> {
         (
             "offset",
             "offset",
-            "level the curve settles at: readout misassignment (SPAM), not part of T1",
+            "level the curve settles at",
             model.offset,
             4,
             false,
@@ -250,7 +250,7 @@ fn param_rows(fit: &T1Fit) -> Vec<ParamRow<'static>> {
         (
             "amplitude",
             "amplitude",
-            "amplitude of the decaying term: excitation imperfection (SPAM); on the uncalibrated path the orientation is pinned to P1(0) = 1, so this comes out positive",
+            "amplitude of the decaying term",
             model.amplitude,
             4,
             false,

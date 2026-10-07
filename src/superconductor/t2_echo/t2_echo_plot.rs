@@ -235,7 +235,7 @@ fn param_rows(fit: &T2EchoFit) -> Vec<ParamRow<'static>> {
         (
             "T2 echo",
             "t2_echo",
-            "echo dephasing time (τ is the total free evolution time), the quantity this scan produces",
+            "echo dephasing time",
             model.t2_echo,
             4,
             true,
@@ -243,7 +243,7 @@ fn param_rows(fit: &T2EchoFit) -> Vec<ParamRow<'static>> {
         (
             "offset",
             "offset",
-            "level the curve settles at: readout misassignment (SPAM), not part of T2 echo",
+            "level the curve settles at",
             model.offset,
             4,
             false,
@@ -251,7 +251,7 @@ fn param_rows(fit: &T2EchoFit) -> Vec<ParamRow<'static>> {
         (
             "amplitude",
             "amplitude",
-            "amplitude of the decaying term: state preparation imperfection (SPAM); the curve rises from P1(0) = 0 to 0.5, so this comes out negative on the uncalibrated path",
+            "amplitude of the decaying term",
             model.amplitude,
             4,
             false,

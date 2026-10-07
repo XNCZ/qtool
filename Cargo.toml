@@ -47,3 +47,11 @@ required-features = ["plot"]
 [[example]]
 name = "drag_amp_demo"
 required-features = ["plot"]
+
+[[example]]
+name = "drag_coeff_demo"
+required-features = ["plot"]
+
+[[example]]
+name = "drag_detuning_demo"
+required-features = ["plot"]

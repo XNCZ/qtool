@@ -8,3 +8,5 @@
 //! 目前落了幅度那一格的最低阶——它拟的不是谷而是 Rabi 余弦，见 [`amplitude::factor_one`]。
 
 pub mod amplitude;
+pub mod coeff;
+pub mod detuning;
