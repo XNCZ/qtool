@@ -14,6 +14,7 @@ pub mod qspec;
 
 pub mod s21;
 pub mod rabi;
+pub mod iq;
 
 /// 读出 IQ 平面上的各态标定中心，**索引即态编号**（0 → |0>，1 → |1>，…）。
 ///

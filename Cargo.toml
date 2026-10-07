@@ -22,6 +22,8 @@ lmfit = "0.4"
 plotly = { version = "0.14.1", optional = true }
 rayon = "1.12.0"
 roots = "0.0.8"
+contour = "0.13"
+geo = { version = "0.33", default-features = false }
 
 [dev-dependencies]
 rand = "0.10.2"

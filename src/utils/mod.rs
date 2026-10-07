@@ -72,6 +72,132 @@ pub(crate) fn median(values: &[f64]) -> f64 {
     }
 }
 
+/// 分位数（线性插值，与 numpy 的 `percentile` 默认口径一致）。
+///
+/// 形参:
+///     sorted: **已升序排好**的样本
+///     q: 分位，0..=1
+///
+/// 返回值:
+///     该分位的值；空数组返回 NaN，q 越界时按端点截断
+pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
+    let n = sorted.len();
+    if n == 0 {
+        return f64::NAN;
+    }
+    let position = match q < 0.0 {
+        true => 0.0,
+        false => match q > 1.0 {
+            true => 1.0,
+            false => q,
+        },
+    } * (n - 1) as f64;
+    let low = position.floor();
+    let high = position.ceil();
+    let (i, j) = (low as usize, high as usize);
+    match i == j {
+        true => sorted[i],
+        false => sorted[i] + (sorted[j] - sorted[i]) * (position - low),
+    }
+}
+
+/// 一维两样本的最优判别阈值与错分率。
+///
+/// 两团样本按值排序后，只有"相邻两值之间"这些切点值得考虑——切点落在别处，错分数只增不减。
+/// 于是扫一遍即可：某个切点左侧的 `b` 与右侧的 `a` 都是错分的。
+///
+/// 这就是分类里那个判别阈值的经验版：**不假设两团各是什么分布**，纯计数。
+///
+/// 形参:
+///     a: 第一组样本
+///     b: 第二组样本
+///
+/// 返回值:
+///     (阈值, 错分率)。阈值取最优切点两侧值的中点；错分率 = 最优切点处的错分数 / 样本总数。
+///     任一组为空或全为 NaN 时返回 (NaN, NaN)
+pub(crate) fn best_threshold(a: &[f64], b: &[f64]) -> (f64, f64) {
+    if a.is_empty() || b.is_empty() {
+        return (f64::NAN, f64::NAN);
+    }
+    // 合并后按值排序，同时带上来源标记
+    let mut merged: Vec<(f64, bool)> = a
+        .iter()
+        .map(|value| (*value, false))
+        .chain(b.iter().map(|value| (*value, true)))
+        .collect();
+    merged.sort_by(|left, right| left.0.partial_cmp(&right.0).unwrap_or(std::cmp::Ordering::Equal));
+    let total = merged.len() as f64;
+    // 切点在 k 之前（即前 k 个落在阈值左侧）时的错分数：左侧的 b + 右侧的 a
+    let (mut errors_best, mut cut_best) = (f64::INFINITY, 0_usize);
+    let (mut left_a, mut left_b) = (0.0, 0.0);
+    for k in 0..=merged.len() {
+        if k > 0 {
+            match merged[k - 1].1 {
+                true => left_b += 1.0,
+                false => left_a += 1.0,
+            }
+        }
+        let right_a = a.len() as f64 - left_a;
+        let errors = left_b + right_a;
+        if errors < errors_best - f64::EPSILON {
+            errors_best = errors;
+            cut_best = k;
+        }
+    }
+    // 阈值取最优切点两侧值的中点；切点贴边时外推一个样本间距
+    let threshold = match cut_best {
+        0 => merged[0].0,
+        k if k >= merged.len() => merged[merged.len() - 1].0,
+        k => 0.5 * (merged[k - 1].0 + merged[k].0),
+    };
+    (threshold, errors_best / total)
+}
+
+/// 两样本的 AUC（= 曼-惠特尼统计量 = **P(b > a)** 的样本估计，平局各计一半；`a` 是第一组、
+/// `b` 是第二组，所以两团分得越开这个数越接近 1）。
+///
+/// 与 [`best_threshold`] 的关键差别：**它不需要选阈值**，所以没有"在同一批样本上既选阈值
+/// 又报错分率"那种乐观偏差，是纯粹的可分性度量。两个数一起看：阈值能用，AUC 不会被样本
+/// 量骗。0.5 表示两团完全重叠，1 表示完全分开。
+///
+/// 形参:
+///     a: 第一组样本
+///     b: 第二组样本
+///
+/// 返回值:
+///     AUC；任一组为空时返回 NaN
+pub(crate) fn auc(a: &[f64], b: &[f64]) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return f64::NAN;
+    }
+    let mut merged: Vec<(f64, bool)> = a
+        .iter()
+        .map(|value| (*value, false))
+        .chain(b.iter().map(|value| (*value, true)))
+        .collect();
+    merged.sort_by(|left, right| left.0.partial_cmp(&right.0).unwrap_or(std::cmp::Ordering::Equal));
+    // 逐点给秩（并列取平均秩），再把 b 的秩和转成"a 大于 b 的期望比例"
+    let mut rank_sum_b = 0.0;
+    let mut index = 0;
+    while index < merged.len() {
+        let mut end = index;
+        while end + 1 < merged.len() && merged[end + 1].0 == merged[index].0 {
+            end += 1;
+        }
+        // 并列组的平均秩（1 基）
+        let rank = 0.5 * ((index + 1) as f64 + (end + 1) as f64);
+        for item in &merged[index..=end] {
+            match item.1 {
+                true => rank_sum_b += rank,
+                false => {}
+            }
+        }
+        index = end + 1;
+    }
+    let (n_a, n_b) = (a.len() as f64, b.len() as f64);
+    (rank_sum_b - n_b * (n_b + 1.0) / 2.0) / (n_a * n_b)
+}
+
 /// 最小值下标；并列时取首个（与 numpy 一致）。
 ///
 /// 形参:
@@ -296,6 +422,8 @@ pub(crate) fn spectrum(x: &[f64], y: &[f64]) -> (Vec<f64>, Vec<f64>) {
     }
     (freqs, amps)
 }
+
+pub(crate) mod density;
 
 #[cfg(feature = "plot")]
 pub(crate) mod heatmap;
