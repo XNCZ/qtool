@@ -1,0 +1,86 @@
+name: Release
+
+# 两种触发：
+#   - workflow_dispatch：可以先只出 artifact 验证各平台能不能编出来；
+#     勾上 publish 则同样发布到 PyPI（用于给已发布的版本补平台 wheel）
+#   - 推 v* tag：出全套 wheel + sdist 并发布（需要仓库 secret PYPI_API_TOKEN）
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "同时发布到 PyPI（默认否，只产 artifact）"
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    name: wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          # aarch64 走 manylinux 容器交叉编译：实验室的 ARM 机器与服务器
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          # universal2：一个 wheel 同时覆盖 Intel 与 Apple Silicon，不必占 Intel runner
+          - runner: macos-latest
+            target: universal2-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      # Cargo.toml 里是 abi3-py310：每个平台只出一个 wheel，不必按 Python 版本铺矩阵。
+      # manylinux: auto 取最低兼容档（manylinux2014），老发行版也装得上。
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: qtool-py
+          target: ${{ matrix.target }}
+          manylinux: auto
+          args: --release --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}
+          path: qtool-py/dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: qtool-py
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: qtool-py/dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI
+    # 手动触发默认只留 artifact；勾了 publish 或推了 tag 才真发版
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # skip-existing：给已发布的版本补平台 wheel 时，同名文件（sdist、已有的 win wheel）
+      # 会被跳过而不是报错；PyPI 本来也不允许覆盖，重复发布是安全的
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
