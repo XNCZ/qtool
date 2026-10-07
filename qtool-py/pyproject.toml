@@ -1,0 +1,42 @@
+[project]
+name = "qtool-py"
+version = "0.2.0"
+description = "Python bindings for qtool: superconducting-qubit calibration fits and interactive plotly reports."
+readme = "README.md"
+authors = [{ name = "xncz", email = "xncz@outlook.com" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.22"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+Repository = "https://github.com/xncz/qtool"
+
+[tool.maturin]
+# 扩展模块叫 qtool._qtool：发行名、导入名、native 模块名三件事分开，免得与 Cargo crate 撞名
+module-name = "qtool._qtool"
+python-packages = ["qtool"]
+python-source = "src"
+# 注：这里不要写 features = ["plot"]——maturin 的 features 指**本 crate** 的 feature，
+# 而 plot 属于依赖 qtool，已经在 Cargo.toml 的 path 依赖上打开
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "src/**/*.rs" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+]
+
+[build-system]
+requires = ["maturin>=1.9.4,<2.0"]
+build-backend = "maturin"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "scipy>=1.15.3",
+]

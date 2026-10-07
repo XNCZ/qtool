@@ -1,0 +1,7 @@
+# maturin 的构建产物（2.2 GB）、uv 的环境与 wheel、Python 缓存
+/target
+/.venv
+/dist
+/.pytest_cache
+__pycache__/
+*.py[cod]

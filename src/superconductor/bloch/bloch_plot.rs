@@ -144,7 +144,7 @@ const STYLE: &str = r#"<style>
 ///     plotly.js（见 [`PLOTLY_JS_CDN`]）
 pub fn bloch_plot_div(
     vector: &BlochVector,
-    x_title: &'static str,
+    x_title: &str,
     div_id: &str,
     frame: Option<&str>,
 ) -> String {

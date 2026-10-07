@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # 默认带 plot feature；示例也一起编（demo 是文档的一部分）
+      - run: cargo build --all-targets --verbose
+      - run: cargo test --verbose
+      # 关掉 plot feature 也要能编（纯数值那一半）
+      - run: cargo build --no-default-features
+      # 打包验证：示例、README、LICENSE 都得进包（`cargo publish` 的前置）
+      - run: cargo package --list
+      # clippy 只报告、不阻断：仓库里有一批历史 lint 债，清它是一次独立的大改，
+      # 不该混进每次提交；这里的作用是让**新增**的 lint 在 diff 里看得见。
+      - run: cargo clippy --all-targets
+        continue-on-error: true
+
+  python:
+    name: python bindings
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: qtool-py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv run pytest -q
+      # wheel 要能真打出来（abi3：每个平台一个）
+      - run: uv build

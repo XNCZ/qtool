@@ -1,0 +1,21 @@
+[package]
+name = "qtool_py"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# 自带空 workspace 表：这是一个独立工程，不跟着上层仓库并入任何 workspace，
+# 上层的 `qtool` 只作为 path 依赖参与编译。
+[workspace]
+
+[lib]
+# 与 [tool.maturin] module-name = "qtool._qtool" 的最后一段一致
+name = "_qtool"
+# rlib 不是冗余：没有它，`cargo test` 找不到 crate（pyo3 FAQ 点名的做法）
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+qtool = { path = "..", features = ["plot"] }
+pyo3 = { version = "0.29", features = ["abi3-py310", "num-complex"] }
+numpy = "0.29"
+lmfit = "0.4"

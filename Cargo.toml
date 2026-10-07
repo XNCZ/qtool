@@ -9,6 +9,9 @@ repository = "https://github.com/xncz/qtool"
 readme = "README.md"
 keywords = ["quantum", "superconducting", "qubit", "tomography", "plotly"]
 categories = ["science", "visualization", "mathematics"]
+# docs/ 里是 GitHub Pages 与 README 用的截图；README 引的是绝对 raw URL，
+# 打进 crate 只会让每个用户白下 3.6 MiB。
+exclude = ["docs/"]
 
 [lib]
 
