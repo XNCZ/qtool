@@ -545,17 +545,19 @@ pub(crate) fn series(
     x: Vec<f64>,
     y: Vec<f64>,
     name: &str,
-    color: &'static str,
+    color: impl Into<String>,
     show_legend: bool,
     x_ref: &str,
     y_ref: &str,
 ) -> Box<dyn Trace> {
+    // 收成 String 再分给 line 与 marker：plotly 的 `Color` 要求 `'static`，借用形态过不去
+    let color = color.into();
     let trace: Box<Scatter<f64, f64>> = Scatter::new(x, y)
         .name(name)
         // 同名 trace 归入同一 legendgroup：点一次图例即可开关多个面板里的同类曲线
         .legend_group(name)
         .mode(Mode::LinesMarkers)
-        .line(Line::new().color(color).dash(DashType::Dash))
+        .line(Line::new().color(color.clone()).dash(DashType::Dash))
         .marker(Marker::new().color(color).size(7))
         .show_legend(show_legend)
         .x_axis(x_ref)
@@ -569,18 +571,20 @@ pub(crate) fn markers(
     y: Vec<f64>,
     error_y: Option<Vec<f64>>,
     name: &str,
-    color: &'static str,
+    color: impl Into<String>,
     size: usize,
     show_legend: bool,
     x_ref: &str,
     y_ref: &str,
 ) -> Box<dyn Trace> {
+    // 收成 String 再分给 marker 与误差棒：plotly 的 `Color` 要求 `'static`，借用形态过不去
+    let color = color.into();
     let mut trace: Box<Scatter<f64, f64>> = Scatter::new(x, y)
         .name(name)
         // 同名 trace 归入同一 legendgroup：点一次图例即可同时开关四个面板里的同类曲线
         .legend_group(name)
         .mode(Mode::Markers)
-        .marker(Marker::new().color(color).size(size))
+        .marker(Marker::new().color(color.clone()).size(size))
         .show_legend(show_legend)
         .x_axis(x_ref)
         .y_axis(y_ref);
@@ -605,7 +609,7 @@ pub(crate) fn curve(
     x: Vec<f64>,
     y: Vec<f64>,
     name: &str,
-    color: &'static str,
+    color: impl Into<String>,
     width: f64,
     show_legend: bool,
     x_ref: &str,
@@ -615,7 +619,7 @@ pub(crate) fn curve(
         .name(name)
         .legend_group(name)
         .mode(Mode::Lines)
-        .line(Line::new().color(color).width(width))
+        .line(Line::new().color(color.into()).width(width))
         .show_legend(show_legend)
         .hover_info(HoverInfo::Skip)
         .x_axis(x_ref)
@@ -642,21 +646,42 @@ pub(crate) fn residual_markers(
     trace
 }
 
-/// 按 P1 着色的样本点：|0> 端蓝、|1> 端红，状态沿投影轴的过渡一眼可读。
+/// 按 P1 着色的样本点：0 端取 `zero`、1 端取 `one`（单条扫描给默认的那对蓝红），状态沿投影轴
+/// 的过渡一眼可读。
 ///
-/// P1 由 [`crate::superconductor::p1`] 定向（0 端即基态），配色无需再翻。
-pub(crate) fn colored_samples(
+/// 端点由调用方给，是为了让"多阶同图"那类图能把阶数压进**深浅**里：同一个色相、不同明度，
+/// 色相仍然只读 P1。
+///
+/// 形参:
+///     x: I 分量 (n,)
+///     y: Q 分量 (n,)
+///     values: 逐点的 P1 (n,)，取值定在 [0, 1] 上（`cmin`/`cmax`）
+///     name: trace 名，同时是 legendgroup——同名的点一次图例一起开关（本 trace 自己不占图例）
+///     zero: P1 = 0 端的颜色
+///     one: P1 = 1 端的颜色
+///     x_ref: 本面板的 x 轴名
+///     y_ref: 本面板的 y 轴名
+///
+/// 返回值:
+///     按 P1 着色的样本点 trace（不显示色标、不占图例，但归入 `name` 那个 legendgroup）
+pub(crate) fn color_samples(
     x: Vec<f64>,
     y: Vec<f64>,
     values: &[f64],
+    name: &str,
+    zero: impl Into<String>,
+    one: impl Into<String>,
     x_ref: &str,
     y_ref: &str,
 ) -> Box<dyn Trace> {
     let scale = vec![
-        ColorScaleElement(0.0, ZERO_COLOR.to_string()),
-        ColorScaleElement(1.0, ONE_COLOR.to_string()),
+        ColorScaleElement(0.0, zero.into()),
+        ColorScaleElement(1.0, one.into()),
     ];
     let trace: Box<Scatter<f64, f64>> = Scatter::new(x, y)
+        .name(name)
+        // 同名 trace 归入同一 legendgroup：点一次图例即可同时开关四个面板里的同类曲线
+        .legend_group(name)
         .mode(Mode::Markers)
         .marker(
             Marker::new()

@@ -21,7 +21,7 @@ use crate::utils::bubble::framize;
 use crate::utils::heatmap::{escape_html, interactive_config};
 use crate::utils::panels::{
     AxisOpts, Cell, DATA_COLOR, FIT_COLOR, GRID_2X3, ONE_COLOR, PanelSpec, ResidualAxis, Titles,
-    ZERO_COLOR, axis_refs, colored_samples, curve, dense_grid, layout, markers, pad, projection_axis,
+    ZERO_COLOR, axis_refs, color_samples, curve, dense_grid, layout, markers, pad, projection_axis,
     projection_refs, ref_point, report_div, residual_axis_range, residual_markers, series,
     value_bounds,
 };
@@ -418,10 +418,13 @@ fn panel_traces(
         }
         Panel::Iq => {
             let (ref_zero, ref_one) = projection_refs(iq, states, prob);
-            traces.push(colored_samples(
+            traces.push(color_samples(
                 iq.iter().map(|z| z.re).collect(),
                 iq.iter().map(|z| z.im).collect(),
                 prob,
+                "Data",
+                ZERO_COLOR,
+                ONE_COLOR,
                 x_ref,
                 y_ref,
             ));

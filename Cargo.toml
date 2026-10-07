@@ -43,3 +43,7 @@ required-features = ["plot"]
 [[example]]
 name = "t2_echo_demo"
 required-features = ["plot"]
+
+[[example]]
+name = "drag_amp_demo"
+required-features = ["plot"]
