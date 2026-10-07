@@ -2,7 +2,7 @@
 //! 串行与 rayon 并行对照。Python 侧脚本用同一 LCG 生成同样的 3000 个问题
 //! （见 /tmp 的 bench_batch.py），但其 lmfit 受 GIL 约束只能串行。
 //!
-//! 运行: cargo run --release --example s12_batch_bench
+//! 运行: cargo run --release --example s21_batch_bench
 
 use qtool::superconductor::s21::{Complex64, S21Model, model_at, s21_fit, s21_fit_batch};
 use std::hint::black_box;

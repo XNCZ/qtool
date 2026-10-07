@@ -1,14 +1,14 @@
 [package]
 name = "qtool"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 authors = ["xncz <xncz@outlook.com>"]
-description = "A simple analysis toolbox for quantum computation."
+description = "Analysis toolbox for quantum computation: superconducting-qubit calibration fits with interactive plotly reports, plus quantum process tomography (QPT)."
 license = "MIT"
 repository = "https://github.com/xncz/qtool"
 readme = "README.md"
-keywords = ["quantum", "tomography", "qpt", "pauli", "fista"]
-categories = ["mathematics", "science", "algorithms"]
+keywords = ["quantum", "superconducting", "qubit", "tomography", "plotly"]
+categories = ["science", "visualization", "mathematics"]
 
 [lib]
 
@@ -28,12 +28,34 @@ geo = { version = "0.33", default-features = false }
 [dev-dependencies]
 rand = "0.10.2"
 
+# 每个分析一份 demo，各自出**一张**报告卡片、写同名 HTML 到 plt/；没有 plot feature 时
+# 这些目标不参与构建。
 [[example]]
-name = "s21_plot_demo"
+name = "s21_demo"
 required-features = ["plot"]
 
 [[example]]
-name = "ramsey_t2_demo"
+name = "s21_power_demo"
+required-features = ["plot"]
+
+[[example]]
+name = "qspec_demo"
+required-features = ["plot"]
+
+[[example]]
+name = "qspec_z_demo"
+required-features = ["plot"]
+
+[[example]]
+name = "rabi_demo"
+required-features = ["plot"]
+
+[[example]]
+name = "iq_demo"
+required-features = ["plot"]
+
+[[example]]
+name = "ramsey_demo"
 required-features = ["plot"]
 
 [[example]]
@@ -45,7 +67,7 @@ name = "t2_echo_demo"
 required-features = ["plot"]
 
 [[example]]
-name = "drag_amp_demo"
+name = "drag_amplitude_demo"
 required-features = ["plot"]
 
 [[example]]
@@ -59,3 +81,8 @@ required-features = ["plot"]
 [[example]]
 name = "bloch_demo"
 required-features = ["plot"]
+
+# 批量拟合基准：只跑拟合、不画图，所以不挂 plot feature；与 qtool-py/bench 下的
+# Python 对照脚本使用同一份确定性数据（逐位一致的 LCG 噪声）。
+[[example]]
+name = "s21_batch_bench"

@@ -8,4 +8,4 @@ CLAUDE.md
 /data
 .claude
 .playwright-mcp
-examples
+*.stackdump
