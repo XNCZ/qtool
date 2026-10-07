@@ -31,3 +31,15 @@ rand = "0.10.2"
 [[example]]
 name = "s21_plot_demo"
 required-features = ["plot"]
+
+[[example]]
+name = "ramsey_t2_demo"
+required-features = ["plot"]
+
+[[example]]
+name = "t1_demo"
+required-features = ["plot"]
+
+[[example]]
+name = "t2_echo_demo"
+required-features = ["plot"]
