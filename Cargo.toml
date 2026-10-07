@@ -55,3 +55,7 @@ required-features = ["plot"]
 [[example]]
 name = "drag_detuning_demo"
 required-features = ["plot"]
+
+[[example]]
+name = "bloch_demo"
+required-features = ["plot"]

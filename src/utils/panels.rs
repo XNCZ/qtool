@@ -94,9 +94,25 @@ const Y_TOP: [f64; 2] = [0.58, 1.0];
 const Y_BOTTOM: [f64; 2] = [0.0, 0.40];
 
 /// 2×3 网格的行域：三行平分原高度，行间距与 2×2 同量级。
+const X_COL0: [f64; 2] = [0.0, 0.28];
+const X_COL1: [f64; 2] = [0.36, 0.64];
+const X_COL2: [f64; 2] = [0.72, 1.0];
+
+const Y_SINGLE: [f64; 2] = [0.0, 1.0];
+
 const Y_ROW0: [f64; 2] = [0.73, 1.0];
 const Y_ROW1: [f64; 2] = [0.365, 0.635];
 const Y_ROW2: [f64; 2] = [0.0, 0.27];
+
+/// 3 列 × 1 行的版式（bloch）：一排放三个方正的投影格，不需要第二行。
+///
+/// 单格宽度取 0.28（2 列版式的 0.40 收窄），设计高度相应压低，单格的宽高比与 2×2 版式大致持平。
+pub(crate) const GRID_1X3: Grid = Grid {
+    xs: &[X_COL0, X_COL1, X_COL2],
+    ys: &[Y_SINGLE],
+    width: 1000.0,
+    height: 420.0,
+};
 
 /// 2 列 × 2 行的版式（s21 / qspec）。
 pub(crate) const GRID_2X2: Grid = Grid {
