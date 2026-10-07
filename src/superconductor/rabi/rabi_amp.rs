@@ -325,7 +325,7 @@ pub(crate) fn fit_once(
 ///
 /// 返回值:
 ///     残差最小的拟合结果；无候选或全部候选失败时返回错误
-fn fit_oriented(
+fn fit_orient(
     amps: &[f64],
     prob: &[f64],
     sigma: Option<&[f64]>,
@@ -409,7 +409,7 @@ pub fn rabi_amp_fit(
     for flipped in [false, true] {
         // 投影反向使归一化变成 1 − P1，这才是倒置的真实形式
         let oriented = orient(&prob, flipped);
-        match fit_oriented(amps, &oriented, weights.as_deref()) {
+        match fit_orient(amps, &oriented, weights.as_deref()) {
             Ok(result) => {
                 let take = match &best {
                     Some((current, _)) => result.chisqr < current.chisqr,
