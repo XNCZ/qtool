@@ -26,7 +26,7 @@ use crate::utils::panels::{
     value_bounds,
 };
 use crate::utils::params::{ParamRow, params_table};
-use crate::utils::{spectrum, unwrap_phase};
+use crate::utils::spectrum;
 use lmfit::Complex64;
 use plotly::Trace;
 use plotly::common::{DashType, Position};
@@ -366,8 +366,8 @@ fn panel_traces(
             ));
         }
         Panel::Phase => {
-            // 相位经 unwrap 解缠绕，否则跳变处会出现整圈假台阶
-            let phase = unwrap_phase(&iq.iter().map(|z| z.arg()).collect::<Vec<f64>>());
+            // 相位取主值 (−π, π]：不做 unwrap，跨割线处会有竖直落差，换来各条曲线电平可比
+            let phase: Vec<f64> = iq.iter().map(|z| z.arg()).collect();
             traces.push(series(x_amps, phase, "Data", DATA_COLOR, false, x_ref, y_ref));
         }
         Panel::Iq => {

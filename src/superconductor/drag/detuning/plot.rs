@@ -36,7 +36,6 @@ use crate::utils::panels::{
     report_div, series,
 };
 use crate::utils::params::{ParamRow, params_table};
-use crate::utils::unwrap_phase;
 use lmfit::{Complex64, ModelParams, ModelResult};
 use plotly::common::{DashType, ErrorData, ErrorType, Line, Marker, Mode, Position};
 use plotly::layout::{Axis, AxisType, Layout, Margin, Shape, ShapeLayer, ShapeLine, ShapeType};
@@ -436,9 +435,8 @@ fn panel_traces(
         }
         Panel::Phase => {
             for layer in layers {
-                // 相位经 unwrap 解缠绕，否则跳变处会出现整圈假台阶
-                let phase =
-                    unwrap_phase(&layer.order.iq.iter().map(|z| z.arg()).collect::<Vec<f64>>());
+                // 相位取主值 (−π, π]：不做 unwrap，跨割线处会有竖直落差，换来各条曲线电平可比
+                let phase: Vec<f64> = layer.order.iq.iter().map(|z| z.arg()).collect();
                 let name = format!("N={}", layer.order.pairs);
                 traces.push(series(
                     layer.order.detunings_hz.to_vec(),
