@@ -2,13 +2,14 @@ name: Release
 
 # 两种触发：
 #   - workflow_dispatch：可以先只出 artifact 验证各平台能不能编出来；
-#     勾上 publish 则同样发布到 PyPI（用于给已发布的版本补平台 wheel）
-#   - 推 v* tag：出全套 wheel + sdist 并发布（需要仓库 secret PYPI_API_TOKEN）
+#     勾上 publish 则 PyPI 与 crates.io 一起发布（用于给已发布的版本补平台 wheel）
+#   - 推 v* tag：出全套 wheel + sdist 并发布
+#     （需要仓库 secret PYPI_API_TOKEN 与 CARGO_REGISTRY_TOKEN）
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "同时发布到 PyPI（默认否，只产 artifact）"
+        description: "同时发布到 PyPI 与 crates.io（默认否，只产 artifact）"
         type: boolean
         default: false
   push:
@@ -68,12 +69,17 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: publish to PyPI
-    # 手动触发默认只留 artifact；勾了 publish 或推了 tag 才真发版
+    name: publish to PyPI + crates.io
+    # 手动触发默认只留 artifact；勾了 publish 或推了 tag 才真发版。
+    # 闸门只有这一个：一次发布决定，两个注册表都发。
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
     needs: [wheels, sdist]
     runs-on: ubuntu-latest
     steps:
+      # checkout 必须在 download-artifact 之前：checkout 默认会 git clean -ffdx，
+      # 放在后面会把刚下下来的 dist/ 清掉。
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -84,3 +90,10 @@ jobs:
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           skip-existing: true
+      # 与上面共用同一个 job/if，不再各判一次。
+      # cargo publish 没有 skip-existing 的等价物：给已发布版本补 wheel 的
+      # workflow_dispatch 重跑会在这里红一次（PyPI 那步已 skip-existing 通过），
+      # 这是诚实的信号，不用 continue-on-error 盖住（那会连 token 失效一起吞）。
+      - run: cargo publish --registry crates-io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
