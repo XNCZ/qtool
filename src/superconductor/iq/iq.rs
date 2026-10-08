@@ -57,7 +57,7 @@ pub enum IqError {
     NoStates,
     /// 某个态的单发点数不足以估计展宽。
     LackShots { state: usize, shots: usize, min: usize },
-    /// 某个态的点全无有限值，或整个云退化成一个点（展布为零）。
+    /// 某个态的有限点太少（其余全是 NaN/inf），连中心都定不下来。
     Degenerate { state: usize },
     /// 两态中心重合，判别轴无定义。
     CoincidentCenters { state_p: usize, state_q: usize },
@@ -73,7 +73,7 @@ impl std::fmt::Display for IqError {
             ),
             Self::Degenerate { state } => write!(
                 f,
-                "state {state} has no usable spread (all points coincide or are non-finite)"
+                "state {state} has too few finite shots; no center can be estimated"
             ),
             Self::CoincidentCenters { state_p, state_q } => write!(
                 f,
@@ -199,7 +199,7 @@ impl IqStats {
 ///          约定），不要求恰好两个态
 ///
 /// 返回值:
-///     各态统计与两两可分性；点数不足、云退化或中心重合时返回错误
+///     各态统计与两两可分性；有限点不足或两态中心重合时返回错误
 pub fn iq_stats(iqs: &[Vec<Complex64>]) -> Result<IqStats, IqError> {
     if iqs.is_empty() {
         return Err(IqError::NoStates);
@@ -226,6 +226,9 @@ pub fn iq_stats(iqs: &[Vec<Complex64>]) -> Result<IqStats, IqError> {
 }
 
 /// 单个态的统计：中心、密度网格与三条等密度线的面积。
+///
+/// 零展布的云（所有单发重合、整个云落在一条直线上）不是坏数据：没有密度网格可建，但中心
+/// 明明白白，等密度区域退化成一个点（面积 0），图上于是只剩点云、没有轮廓。
 fn single_state(index: usize, cloud: &[Complex64]) -> Result<StateStats, IqError> {
     if cloud.len() < MIN_SHOTS {
         return Err(IqError::LackShots {
@@ -242,27 +245,22 @@ fn single_state(index: usize, cloud: &[Complex64]) -> Result<StateStats, IqError
     if points.len() < MIN_SHOTS {
         return Err(IqError::Degenerate { state: index });
     }
-    let density = match DensityGrid::from_samples(&points, BINS) {
-        Some(grid) => grid,
-        None => return Err(IqError::Degenerate { state: index }),
-    };
+    let density = DensityGrid::from_samples(&points, BINS);
     let center = Complex64::new(
         points.iter().map(|(x, _)| x).sum::<f64>() / points.len() as f64,
         points.iter().map(|(_, y)| y).sum::<f64>() / points.len() as f64,
     );
+    // 各级等密度线的区域：有网格就照它取，没有（零展布）就是一个点。两条路给的是同一类对象，
+    // 往下算面积、半径、画轮廓都不必再分叉
+    let regions = LEVELS.map(|level| match &density {
+        Some(grid) => grid.deepest(level).1,
+        None => Region::point(),
+    });
     let mut areas = [0.0; LEVELS.len()];
     let mut radii = [0.0; LEVELS.len()];
-    let mut regions = [
-        density.region(f64::INFINITY),
-        density.region(f64::INFINITY),
-        density.region(f64::INFINITY),
-        density.region(f64::INFINITY),
-    ];
-    for (slot, level) in LEVELS.iter().enumerate() {
-        let (_, region) = density.deepest(*level);
+    for (slot, region) in regions.iter().enumerate() {
         areas[slot] = region.area;
         radii[slot] = (region.area / std::f64::consts::PI).sqrt();
-        regions[slot] = region;
     }
     Ok(StateStats {
         center,
