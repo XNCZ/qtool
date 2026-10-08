@@ -1720,6 +1720,8 @@ dependencies = [
  "plotly",
  "rayon",
  "roots",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

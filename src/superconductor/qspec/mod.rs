@@ -1,10 +1,13 @@
-//! 比特谱（qspec）：洛伦兹线型的拟合（[`qspec`]），以及报告渲染（[`qspec_plot`]，feature = "plot"）。
+//! 比特谱（qspec）：洛伦兹线型的拟合（[`qspec`]）、通量调谐（f01 vs Z）的拟合（[`flux`]），
+//! 以及报告渲染（[`qspec_plot`]、[`qspec_z_plot`]，feature = "plot"）。
 
 pub mod qspec;
 
 // 模型文件是 `qspec/qspec.rs`，不提一层的话对外路径是 `qspec::qspec::Lorentz`；这里把它的公共项
 // 收平到本模块，外部统一写 `qspec::Lorentz`（`pub(crate)` 的那些也照原可见性一并转出）。
 pub use qspec::*;
+
+pub mod flux;
 
 #[cfg(feature = "plot")]
 pub mod qspec_plot;

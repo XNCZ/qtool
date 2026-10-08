@@ -156,7 +156,7 @@ fn main() {
         lines.push(iq);
         sigmas.push(sigma);
     }
-    let batch = ramsey_fit_batch(&axis, &lines, Some(&states), Some(&sigmas));
+    let batch = ramsey_fit_batch(&axis, &lines, Some(&vec![&states; lines.len()]), Some(&sigmas));
     let ok = batch.iter().filter(|item| item.is_ok()).count();
     println!("ramsey_fit_batch: {ok}/{} 条拟合成功", batch.len());
 

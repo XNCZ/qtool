@@ -121,7 +121,7 @@ fn main() {
         lines.push(iq);
         sigmas.push(sigma);
     }
-    let batch = rabi_amp_fit_batch(&axis, &lines, Some(&states), Some(&sigmas));
+    let batch = rabi_amp_fit_batch(&axis, &lines, Some(&vec![&states; lines.len()]), Some(&sigmas));
     let ok = batch.iter().filter(|item| item.is_ok()).count();
     println!("rabi_amp_fit_batch: {ok}/{} 条拟合成功", batch.len());
 

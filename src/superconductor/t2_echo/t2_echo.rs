@@ -169,6 +169,8 @@ pub enum T2EchoError {
     LengthMismatch { taus: usize, iq: usize },
     /// 延时点数不足以约束三参数指数。
     LackPoints { points: usize, min: usize },
+    /// 批量拟合时逐线 `states` 的份数与延时扫描数量不一致。
+    BatchStatesMismatch { lines: usize, states: usize },
     /// 批量拟合时逐线 `sigmas` 的份数与延时扫描数量不一致。
     BatchSigmaMismatch { lines: usize, sigmas: usize },
     /// 数据无有效投影值，或全部初值候选均未收敛。
@@ -191,6 +193,10 @@ impl std::fmt::Display for T2EchoError {
             Self::BatchSigmaMismatch { lines, sigmas } => write!(
                 f,
                 "per-line sigma count ({sigmas}) does not match the number of delay scans ({lines})"
+            ),
+            Self::BatchStatesMismatch { lines, states } => write!(
+                f,
+                "per-line state-center count ({states}) does not match the number of delay scans ({lines})"
             ),
             Self::AllFitsUnsuccess => write!(
                 f,
@@ -341,41 +347,54 @@ pub fn t2_echo_fit(
 /// 批量 T2 echo 拟合：对多条回波扫描并行执行 [`t2_echo_fit`]，结果按输入顺序返回。
 ///
 /// 每条线互不依赖，rayon 按当前线程池并行；单线失败不影响其余线。各态标定中心由各线
-/// **共用**——同一条比特的多档参数扫描共用一套中心，换比特/换标定就再调一次本函数。
+/// **逐线给**：二十颗比特同时测时每颗有自己的读出中心；同一条比特的多档扫描则把同一个中心
+/// 重复 `iq_lines.len()` 遍（逐线一份引用，不做广播约定）。
 ///
 /// 形参:
 ///     taus: 公共总自由演化时间轴 (n,)
 ///     iq_lines: 每条线的平均复数 IQ，长度均为 n
-///     states: 各态标定中心；None 表示未标定
+///     states: 每条线各自的各态标定中心，逐线对应；给定时份数须与 `iq_lines` 相同；
+///             None 表示全部未标定
 ///     sigmas: 每条线各自的 IQ 域逐点不确定度，逐线对应；给定时份数须与 `iq_lines`
 ///             相同，每份长度须为 n；None 表示全部不加权
 ///
 /// 返回值:
-///     与 `iq_lines` 等长的结果列表，逐线对应；`sigmas` 缺少对应份的线返回
-///     [`T2EchoError::BatchSigmaMismatch`]
+///     与 `iq_lines` 等长的结果列表，逐线对应；`states` / `sigmas` 缺少对应份的线分别返回
+///     [`T2EchoError::BatchStatesMismatch`] / [`T2EchoError::BatchSigmaMismatch`]
 pub fn t2_echo_fit_batch(
     taus: &[f64],
     iq_lines: &[Vec<Complex64>],
-    states: Option<&StateCenters>,
+    states: Option<&[&StateCenters]>,
     sigmas: Option<&[Vec<f64>]>,
 ) -> Vec<Result<T2EchoFit, T2EchoError>> {
-    match sigmas {
-        Some(list) => iq_lines
-            .par_iter()
-            .enumerate()
-            .map(|(index, line)| match list.get(index) {
-                Some(sigma) => t2_echo_fit(taus, line, states, Some(sigma)),
-                None => Err(T2EchoError::BatchSigmaMismatch {
-                    lines: iq_lines.len(),
-                    sigmas: list.len(),
-                }),
-            })
-            .collect(),
-        None => iq_lines
-            .par_iter()
-            .map(|line| t2_echo_fit(taus, line, states, None))
-            .collect(),
-    }
+    iq_lines
+        .par_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let centers = match states {
+                Some(list) => match list.get(index) {
+                    Some(centers) => Some(*centers),
+                    None => {
+                        return Err(T2EchoError::BatchStatesMismatch {
+                            lines: iq_lines.len(),
+                            states: list.len(),
+                        });
+                    }
+                },
+                None => None,
+            };
+            match sigmas {
+                Some(list) => match list.get(index) {
+                    Some(sigma) => t2_echo_fit(taus, line, centers, Some(sigma)),
+                    None => Err(T2EchoError::BatchSigmaMismatch {
+                        lines: iq_lines.len(),
+                        sigmas: list.len(),
+                    }),
+                },
+                None => t2_echo_fit(taus, line, centers, None),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -87,6 +87,102 @@ fn plotly_js_cdn() -> &'static str {
     qtool::superconductor::s21::s21_plot::PLOTLY_JS_CDN
 }
 
+/// 批量入口的 `states`：单个 `StateCenters`（广播到每一行）或与行数等长的序列。
+///
+/// 形参:
+///     states: Python 侧传进来的对象；None 表示全部未标定
+///     lines: 批量的行数
+///
+/// 返回值:
+///     逐线的一串各态标定中心；None 给空表。既不是单个也不是序列、或序列份数对不上行数时
+///     抛 [`QtoolError`]
+pub(crate) fn per_line_states(
+    states: Option<&Bound<'_, PyAny>>,
+    lines: usize,
+) -> PyResult<Vec<PyStateCenters>> {
+    let object = match states {
+        Some(object) => object,
+        None => return Ok(Vec::new()),
+    };
+    match object.extract::<PyStateCenters>() {
+        Ok(single) => Ok(vec![single; lines]),
+        Err(_not_single) => {
+            let list: Vec<PyStateCenters> = object.extract().map_err(|_invalid| {
+                QtoolError::new_err("states must be a StateCenters or a sequence of StateCenters")
+            })?;
+            match list.len() == lines {
+                true => Ok(list),
+                false => Err(QtoolError::new_err(format!(
+                    "states has {} entries but the batch has {lines} lines",
+                    list.len()
+                ))),
+            }
+        }
+    }
+}
+
+/// 批量入口的 `sigmas`：单个一维数组（广播到每一行）或与行数等长的序列。
+///
+/// 形参:
+///     sigmas: Python 侧传进来的对象；None 表示全部不加权
+///     lines: 批量的行数
+///
+/// 返回值:
+///     逐线的一串逐点不确定度；None 给空表。既不是单个数组也不是序列、或序列份数对不上行数
+///     时抛 [`QtoolError`]
+pub(crate) fn per_line_sigmas(
+    sigmas: Option<&Bound<'_, PyAny>>,
+    lines: usize,
+) -> PyResult<Vec<Vec<f64>>> {
+    let object = match sigmas {
+        Some(object) => object,
+        None => return Ok(Vec::new()),
+    };
+    match object.extract::<Vec<f64>>() {
+        Ok(single) => Ok(vec![single; lines]),
+        Err(_not_single) => {
+            let list: Vec<Vec<f64>> = object.extract().map_err(|_invalid| {
+                QtoolError::new_err("sigmas must be an array or a sequence of arrays")
+            })?;
+            match list.len() == lines {
+                true => Ok(list),
+                false => Err(QtoolError::new_err(format!(
+                    "sigmas has {} entries but the batch has {lines} lines",
+                    list.len()
+                ))),
+            }
+        }
+    }
+}
+
+/// 逐线的 σ 数组转成 Rust 批量入口的形状；空表给 `None`（全部不加权）。
+///
+/// 形参:
+///     sigmas: [`per_line_sigmas`] 归一出来的逐线不确定度
+///
+/// 返回值:
+///     `Some(逐线切片)`；`sigmas` 为空表时给 None
+pub(crate) fn batch_sigmas_arg(sigmas: &[Vec<f64>]) -> Option<&[Vec<f64>]> {
+    match sigmas.is_empty() {
+        true => None,
+        false => Some(sigmas),
+    }
+}
+
+/// 逐线的各态标定中心转成逐线引用（Rust 侧批量入口的形状）；空表给 `None`（逐条自估）。
+///
+/// 形参:
+///     states: [`per_line_states`] 归一出来的逐线中心
+///
+/// 返回值:
+///     `Some(逐线引用)`；`states` 为空表时给 None
+pub(crate) fn batch_states_arg(states: &[PyStateCenters]) -> Option<Vec<&StateCenters>> {
+    match states.is_empty() {
+        true => None,
+        false => Some(states.iter().map(|item| &item.inner).collect()),
+    }
+}
+
 /// native 模块 `qtool._qtool`：顶层放共用词汇，各实验按子模块挂上去。
 #[pymodule]
 fn _qtool(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {

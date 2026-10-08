@@ -295,6 +295,8 @@ pub enum QspecError {
     LengthMismatch { freqs: usize, iq: usize },
     /// 频点数不足以约束四参数线型。
     LackPoints { points: usize, min: usize },
+    /// 批量拟合时逐线 `states` 的份数与频率线数量不一致。
+    BatchStatesMismatch { lines: usize, states: usize },
     /// 批量拟合时逐线 `sigmas` 的份数与频率线数量不一致。
     BatchSigmaMismatch { lines: usize, sigmas: usize },
     /// 无初值候选，或全部候选均未收敛。
@@ -317,6 +319,10 @@ impl std::fmt::Display for QspecError {
             Self::BatchSigmaMismatch { lines, sigmas } => write!(
                 f,
                 "per-line sigma count ({sigmas}) does not match the number of frequency lines ({lines})"
+            ),
+            Self::BatchStatesMismatch { lines, states } => write!(
+                f,
+                "per-line state-center count ({states}) does not match the number of frequency lines ({lines})"
             ),
             Self::AllFitsUnsuccess => {
                 write!(f, "no initial-value candidate produced a fit")
@@ -487,31 +493,42 @@ pub fn qspec_fit(
 ///             相同，每份长度须为 n；None 表示全部不加权
 ///
 /// 返回值:
-///     与 `iq_lines` 等长的结果列表，逐线对应；`sigmas` 缺少对应份的线返回
-///     [`QspecError::BatchSigmaMismatch`]
+///     与 `iq_lines` 等长的结果列表，逐线对应；`states` / `sigmas` 缺少对应份的线分别返回
+///     [`QspecError::BatchStatesMismatch`] / [`QspecError::BatchSigmaMismatch`]
 pub fn qspec_fit_batch(
     freqs_hz: &[f64],
     iq_lines: &[Vec<Complex64>],
-    states: Option<&StateCenters>,
+    states: Option<&[&StateCenters]>,
     sigmas: Option<&[Vec<f64>]>,
 ) -> Vec<Result<QspecFit, QspecError>> {
-    match sigmas {
-        Some(list) => iq_lines
-            .par_iter()
-            .enumerate()
-            .map(|(index, line)| match list.get(index) {
-                Some(sigma) => qspec_fit(freqs_hz, line, states, Some(sigma)),
-                None => Err(QspecError::BatchSigmaMismatch {
-                    lines: iq_lines.len(),
-                    sigmas: list.len(),
-                }),
-            })
-            .collect(),
-        None => iq_lines
-            .par_iter()
-            .map(|line| qspec_fit(freqs_hz, line, states, None))
-            .collect(),
-    }
+    iq_lines
+        .par_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let centers = match states {
+                Some(list) => match list.get(index) {
+                    Some(centers) => Some(*centers),
+                    None => {
+                        return Err(QspecError::BatchStatesMismatch {
+                            lines: iq_lines.len(),
+                            states: list.len(),
+                        });
+                    }
+                },
+                None => None,
+            };
+            match sigmas {
+                Some(list) => match list.get(index) {
+                    Some(sigma) => qspec_fit(freqs_hz, line, centers, Some(sigma)),
+                    None => Err(QspecError::BatchSigmaMismatch {
+                        lines: iq_lines.len(),
+                        sigmas: list.len(),
+                    }),
+                },
+                None => qspec_fit(freqs_hz, line, centers, None),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

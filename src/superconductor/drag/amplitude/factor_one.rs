@@ -253,6 +253,9 @@ pub enum FactorOneError {
     /// 幅度点数不足以约束两参数余弦。
     LackPoints { points: usize, min: usize },
     /// 批量拟合时逐线 `sigmas` 的份数与幅度扫描数量不一致。
+    /// 批量拟合时逐线 `states` 的份数与幅度扫描数量不一致。
+    BatchStatesMismatch { lines: usize, states: usize },
+    /// 批量拟合时逐线 `sigmas` 的份数与幅度扫描数量不一致。
     BatchSigmaMismatch { lines: usize, sigmas: usize },
     /// 数据无有效投影值，或无初值候选、全部候选均未收敛。
     AllFitsUnsuccess,
@@ -274,6 +277,10 @@ impl std::fmt::Display for FactorOneError {
             Self::BatchSigmaMismatch { lines, sigmas } => write!(
                 f,
                 "per-line sigma count ({sigmas}) does not match the number of amplitude scans ({lines})"
+            ),
+            Self::BatchStatesMismatch { lines, states } => write!(
+                f,
+                "per-line state-center count ({states}) does not match the number of amplitude scans ({lines})"
             ),
             Self::AllFitsUnsuccess => write!(
                 f,
@@ -445,40 +452,49 @@ pub fn factor_one_fit(
 
 /// 批量最低阶拟合：对多条幅度扫描并行执行 [`factor_one_fit`]，结果按输入顺序返回。
 ///
-/// 每条线互不依赖，rayon 按当前线程池并行；单线失败不影响其余线。各态标定中心由各线
-/// **共用**——同一批比特共用一套中心，换标定就再调一次本函数。
+/// 每条线互不依赖，rayon 按当前线程池并行；单线失败不影响其余线。各态标定中心**逐线给**：
+/// 同一批比特各有各的中心时逐条对应，共用一套时把同一个中心重复 `iq_lines.len()` 遍
+/// （逐线一份引用，不做广播约定）。
 ///
 /// 形参:
 ///     amps: 公共幅度轴 (n,)
 ///     iq_lines: 每条线的平均复数 IQ，长度均为 n
-///     states: 各态标定中心；必传（同 [`factor_one_fit`]）
+///     states: 每条线各自的各态标定中心，逐线对应；份数须与 `iq_lines` 相同（必传，同 [`factor_one_fit`]）
 ///     sigmas: 每条线各自的 IQ 域逐点不确定度，逐线对应；给定时份数须与 `iq_lines`
 ///             相同，每份长度须为 n；None 表示全部不加权
 ///
 /// 返回值:
-///     与 `iq_lines` 等长的结果列表，逐线对应；`sigmas` 缺少对应份的线返回
-///     [`FactorOneError::BatchSigmaMismatch`]
+///     与 `iq_lines` 等长的结果列表，逐线对应；`states` / `sigmas` 缺少对应份的线分别返回
+///     [`FactorOneError::BatchStatesMismatch`] / [`FactorOneError::BatchSigmaMismatch`]
 pub fn factor_one_fit_batch(
     amps: &[f64],
     iq_lines: &[Vec<Complex64>],
-    states: &StateCenters,
+    states: &[&StateCenters],
     sigmas: Option<&[Vec<f64>]>,
 ) -> Vec<Result<FactorOneFit, FactorOneError>> {
-    match sigmas {
-        Some(list) => iq_lines
-            .par_iter()
-            .enumerate()
-            .map(|(index, line)| match list.get(index) {
-                Some(sigma) => factor_one_fit(amps, line, states, Some(sigma)),
-                None => Err(FactorOneError::BatchSigmaMismatch {
-                    lines: iq_lines.len(),
-                    sigmas: list.len(),
-                }),
-            })
-            .collect(),
-        None => iq_lines
-            .par_iter()
-            .map(|line| factor_one_fit(amps, line, states, None))
-            .collect(),
-    }
+    iq_lines
+        .par_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let centers = match states.get(index) {
+                Some(centers) => *centers,
+                None => {
+                    return Err(FactorOneError::BatchStatesMismatch {
+                        lines: iq_lines.len(),
+                        states: states.len(),
+                    });
+                }
+            };
+            match sigmas {
+                Some(list) => match list.get(index) {
+                    Some(sigma) => factor_one_fit(amps, line, centers, Some(sigma)),
+                    None => Err(FactorOneError::BatchSigmaMismatch {
+                        lines: iq_lines.len(),
+                        sigmas: list.len(),
+                    }),
+                },
+                None => factor_one_fit(amps, line, centers, None),
+            }
+        })
+        .collect()
 }

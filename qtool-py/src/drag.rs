@@ -1,8 +1,8 @@
 //! DRAG 标定（幅度 / 系数 / 载波失谐）：`qtool::superconductor::drag` 的绑定。
 //!
 //! 三个子模块各自独立：`qtool.drag.amplitude`、`qtool.drag.coeff`、`qtool.drag.detuning`。
-//! 三档**都必须**吃各态标定中心（Rust 侧是 `&StateCenters`，不是 `Option`），这是与其它实验
-//! 唯一的接口差别。
+//! 三档**都必须**吃各态标定中心（Rust 侧是逐线的 `&[&StateCenters]`，不是 `Option`），这是与
+//! 其它实验唯一的接口差别。
 
 pub mod amplitude {
     //! DRAG 幅度扫描：`qtool::superconductor::drag::amplitude` 的绑定。
@@ -10,9 +10,12 @@ pub mod amplitude {
     //! 两种线型各一套拟合：最低阶（`pairs = 1`）是余弦 `CosWave`，升阶是谷 `Valley`。
     //! 这里的 `fit` / `fit_batch` 指最低阶那一套，升阶那一套叫 `valley_fit` / `valley_fit_batch`。
 
-    use crate::{PyStateCenters, QtoolError};
+    use crate::{
+        PyStateCenters, QtoolError, batch_sigmas_arg, per_line_sigmas, per_line_states,
+    };
     use numpy::{IntoPyArray, PyArray1};
     use pyo3::prelude::*;
+    use qtool::superconductor::StateCenters;
     use qtool::superconductor::drag::amplitude::plot::{
         OrderFit, OrderScan, drag_amplitude_plot_div,
     };
@@ -371,10 +374,15 @@ pub mod amplitude {
         py: Python<'_>,
         amps: Vec<f64>,
         iqs: Vec<Vec<lmfit::Complex64>>,
-        states: PyStateCenters,
-        sigmas: Option<Vec<Vec<f64>>>,
-    ) -> Vec<Py<PyAny>> {
-        factor_one_fit_batch(&amps, &iqs, &states.inner, sigmas.as_deref())
+        states: &Bound<'_, PyAny>,
+        sigmas: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        let lines = iqs.len();
+        let centers = per_line_states(Some(states), lines)?;
+        let sigmas = per_line_sigmas(sigmas, lines)?;
+        let refs: Vec<&StateCenters> = centers.iter().map(|item| &item.inner).collect();
+        let outcome = factor_one_fit_batch(&amps, &iqs, &refs, batch_sigmas_arg(&sigmas));
+        Ok(outcome
             .into_iter()
             .map(|outcome| match outcome {
                 Ok(fitted) => Py::new(py, PyFactorOneFit { inner: fitted })
@@ -384,7 +392,7 @@ pub mod amplitude {
                     .into_value(py)
                     .into_any(),
             })
-            .collect()
+            .collect())
     }
 
     /// 拟合一条升阶（`pairs ≥ 2`）幅度扫描：谷的洛伦兹。
@@ -408,10 +416,15 @@ pub mod amplitude {
         py: Python<'_>,
         amps: Vec<f64>,
         iqs: Vec<Vec<lmfit::Complex64>>,
-        states: PyStateCenters,
-        sigmas: Option<Vec<Vec<f64>>>,
-    ) -> Vec<Py<PyAny>> {
-        factor_n_fit_batch(&amps, &iqs, &states.inner, sigmas.as_deref())
+        states: &Bound<'_, PyAny>,
+        sigmas: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        let lines = iqs.len();
+        let centers = per_line_states(Some(states), lines)?;
+        let sigmas = per_line_sigmas(sigmas, lines)?;
+        let refs: Vec<&StateCenters> = centers.iter().map(|item| &item.inner).collect();
+        let outcome = factor_n_fit_batch(&amps, &iqs, &refs, batch_sigmas_arg(&sigmas));
+        Ok(outcome
             .into_iter()
             .map(|outcome| match outcome {
                 Ok(fitted) => Py::new(py, PyFactorNFit { inner: fitted })
@@ -421,7 +434,7 @@ pub mod amplitude {
                     .into_value(py)
                     .into_any(),
             })
-            .collect()
+            .collect())
     }
 
     /// 升阶扫描窗的半宽 `a_pi / (2·pairs)`：围着上一阶的谷位取窗时用它。
@@ -479,9 +492,12 @@ pub mod coeff {
     //!
     //! 每一阶都拟谷（系数从零起、曲线不是 Rabi 余弦，没有周期可给窗口定尺度）。
 
-    use crate::{PyStateCenters, QtoolError};
+    use crate::{
+        PyStateCenters, QtoolError, batch_sigmas_arg, per_line_sigmas, per_line_states,
+    };
     use numpy::{IntoPyArray, PyArray1};
     use pyo3::prelude::*;
+    use qtool::superconductor::StateCenters;
     use qtool::superconductor::drag::coeff::plot::{OrderScan, drag_coeff_plot_div};
     use qtool::superconductor::drag::coeff::{
         Valley, ValleyError as CoreValleyError, ValleyFit as CoreValleyFit, valley_fit,
@@ -704,10 +720,15 @@ pub mod coeff {
         py: Python<'_>,
         coeffs: Vec<f64>,
         iqs: Vec<Vec<lmfit::Complex64>>,
-        states: PyStateCenters,
-        sigmas: Option<Vec<Vec<f64>>>,
-    ) -> Vec<Py<PyAny>> {
-        valley_fit_batch(&coeffs, &iqs, &states.inner, sigmas.as_deref())
+        states: &Bound<'_, PyAny>,
+        sigmas: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        let lines = iqs.len();
+        let centers = per_line_states(Some(states), lines)?;
+        let sigmas = per_line_sigmas(sigmas, lines)?;
+        let refs: Vec<&StateCenters> = centers.iter().map(|item| &item.inner).collect();
+        let outcome = valley_fit_batch(&coeffs, &iqs, &refs, batch_sigmas_arg(&sigmas));
+        Ok(outcome
             .into_iter()
             .map(|outcome| match outcome {
                 Ok(fitted) => Py::new(py, PyValleyFit { inner: fitted })
@@ -717,7 +738,7 @@ pub mod coeff {
                     .into_value(py)
                     .into_any(),
             })
-            .collect()
+            .collect())
     }
 
     /// 渲染整条升阶链的报告 div（返回 HTML 片段）。
@@ -763,9 +784,12 @@ pub mod detuning {
     //!
     //! 每一阶都拟谷，谷心就是这一轮要修掉的**载波残差**（Hz）。
 
-    use crate::{PyStateCenters, QtoolError};
+    use crate::{
+        PyStateCenters, QtoolError, batch_sigmas_arg, per_line_sigmas, per_line_states,
+    };
     use numpy::{IntoPyArray, PyArray1};
     use pyo3::prelude::*;
+    use qtool::superconductor::StateCenters;
     use qtool::superconductor::drag::detuning::plot::{OrderScan, drag_detuning_plot_div};
     use qtool::superconductor::drag::detuning::{
         Valley, ValleyError as CoreValleyError, ValleyFit as CoreValleyFit, valley_fit,
@@ -988,10 +1012,15 @@ pub mod detuning {
         py: Python<'_>,
         detunings_hz: Vec<f64>,
         iqs: Vec<Vec<lmfit::Complex64>>,
-        states: PyStateCenters,
-        sigmas: Option<Vec<Vec<f64>>>,
-    ) -> Vec<Py<PyAny>> {
-        valley_fit_batch(&detunings_hz, &iqs, &states.inner, sigmas.as_deref())
+        states: &Bound<'_, PyAny>,
+        sigmas: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        let lines = iqs.len();
+        let centers = per_line_states(Some(states), lines)?;
+        let sigmas = per_line_sigmas(sigmas, lines)?;
+        let refs: Vec<&StateCenters> = centers.iter().map(|item| &item.inner).collect();
+        let outcome = valley_fit_batch(&detunings_hz, &iqs, &refs, batch_sigmas_arg(&sigmas));
+        Ok(outcome
             .into_iter()
             .map(|outcome| match outcome {
                 Ok(fitted) => Py::new(py, PyValleyFit { inner: fitted })
@@ -1001,7 +1030,7 @@ pub mod detuning {
                     .into_value(py)
                     .into_any(),
             })
-            .collect()
+            .collect())
     }
 
     /// 渲染整条升阶链的报告 div（返回 HTML 片段）。

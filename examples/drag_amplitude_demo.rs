@@ -241,7 +241,7 @@ fn main() {
         lines.push(synthetic(&truth(2, &amps), sigma, rng));
         sigmas.push(vec![sigma; amps.len()]);
     }
-    let batch = factor_n_fit_batch(&amps, &lines, &states, Some(&sigmas));
+    let batch = factor_n_fit_batch(&amps, &lines, &vec![&states; lines.len()], Some(&sigmas));
     let ok = batch.iter().filter(|item| item.is_ok()).count();
     let centres: Vec<f64> = batch
         .iter()

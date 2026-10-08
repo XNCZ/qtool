@@ -222,7 +222,7 @@ fn main() {
         lines.push(synthetic(&truth(&coeffs), sigma, rng));
         sigmas.push(vec![sigma; coeffs.len()]);
     }
-    let batch = valley_fit_batch(&coeffs, &lines, &states, Some(&sigmas));
+    let batch = valley_fit_batch(&coeffs, &lines, &vec![&states; lines.len()], Some(&sigmas));
     let ok = batch.iter().filter(|item| item.is_ok()).count();
     let centres: Vec<f64> = batch
         .iter()

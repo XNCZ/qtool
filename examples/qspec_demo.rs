@@ -131,7 +131,7 @@ fn main() {
         axis = freqs;
         lines.push(iq);
     }
-    let batch = qspec_fit_batch(&axis, &lines, Some(&states), None);
+    let batch = qspec_fit_batch(&axis, &lines, Some(&vec![&states; lines.len()]), None);
     let ok = batch.iter().filter(|item| item.is_ok()).count();
     println!("qspec_fit_batch: {}/{} 条拟合成功", ok, batch.len());
 

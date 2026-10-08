@@ -2,7 +2,10 @@
 //!
 //! 对外四个名字：模型 `CosDamp`、结果 `RamseyFit`、错误 `RamseyError`，以及 `fit` / `fit_batch` / `plot`。
 
-use crate::{PyStateCenters, QtoolError};
+use crate::{
+    PyStateCenters, QtoolError, batch_sigmas_arg, batch_states_arg, per_line_sigmas,
+    per_line_states,
+};
 use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
 use qtool::superconductor::ramsey::ramsey_plot::ramsey_plot_div;
@@ -184,11 +187,19 @@ fn fit_batch(
     py: Python<'_>,
     taus: Vec<f64>,
     iqs: Vec<Vec<lmfit::Complex64>>,
-    states: Option<PyStateCenters>,
-    sigmas: Option<Vec<Vec<f64>>>,
-) -> Vec<Py<PyAny>> {
-    let states = states.as_ref().map(|item| &item.inner);
-    ramsey_fit_batch(&taus, &iqs, states, sigmas.as_deref())
+    states: Option<&Bound<'_, PyAny>>,
+    sigmas: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Vec<Py<PyAny>>> {
+    let lines = iqs.len();
+    let centers = per_line_states(states, lines)?;
+    let sigmas = per_line_sigmas(sigmas, lines)?;
+    let outcome = ramsey_fit_batch(
+        &taus,
+        &iqs,
+        batch_states_arg(&centers).as_deref(),
+        batch_sigmas_arg(&sigmas),
+    );
+    Ok(outcome
         .into_iter()
         .map(|outcome| match outcome {
             Ok(fitted) => Py::new(py, PyRamseyFit { inner: fitted })
@@ -198,7 +209,7 @@ fn fit_batch(
                 .into_value(py)
                 .into_any(),
         })
-        .collect()
+        .collect())
 }
 
 /// 渲染报告 div（返回 HTML 片段）。

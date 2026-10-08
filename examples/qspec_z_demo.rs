@@ -6,11 +6,13 @@
 //!
 //! 两张卡片：上面一张固定宽窗（整段调谐范围共用一条公共轴，`QspecZLine::freqs` 留 `None`），
 //! 下面一张动窗扫描（窗心逐行外推到该行的真值峰位，每行自带频率轴，热图按各轴的并集铺开、
-//! 没覆盖到的格子留空）。
+//! 没覆盖到的格子留空）。动窗那张还把逐行的峰位拟成通量调谐线型（`flux_fit`），报告最下方
+//! 出一张 f01 vs Z 的面板（峰位点 + 拟合曲线 + 参数表）。
 //!
 //! 运行: cargo run --release --example qspec_z_demo
 
 use qtool::superconductor::StateCenters;
+use qtool::superconductor::qspec::flux::flux_fit;
 use qtool::superconductor::qspec::qspec_plot::PLOTLY_JS_CDN;
 use qtool::superconductor::qspec::qspec_z_plot::{QspecZLine, qspec_z_plot_div};
 use qtool::superconductor::qspec::{Complex64, Lorentz, qspec_fit};
@@ -99,12 +101,16 @@ fn synthetic(
 
 fn main() {
     let states = StateCenters::new(vec![G0, G1]);
+    // 逐行偏置轴：两张卡片与通量拟合共用同一条
+    let zs: Vec<f64> = (0..N_Z)
+        .map(|row| Z_LOW + (Z_HIGH - Z_LOW) * row as f64 / (N_Z - 1) as f64)
+        .collect();
 
     let mut axis: Vec<f64> = Vec::new();
     let mut iq_lines: Vec<Vec<Complex64>> = Vec::new();
     let mut fits = Vec::with_capacity(N_Z);
     for row in 0..N_Z {
-        let z = Z_LOW + (Z_HIGH - Z_LOW) * row as f64 / (N_Z - 1) as f64;
+        let z = zs[row];
         let fq_true = flux_tunable(z);
         let (freqs, iq) = synthetic(row as u64, fq_true, F_CENTER_HZ, SCAN_HZ, N_FREQ);
         axis = freqs;
@@ -125,7 +131,7 @@ fn main() {
 
     let lines: Vec<QspecZLine<'_>> = (0..N_Z)
         .map(|row| QspecZLine {
-            z: Z_LOW + (Z_HIGH - Z_LOW) * row as f64 / (N_Z - 1) as f64,
+            z: zs[row],
             iq: &iq_lines[row],
             fit: fits[row].as_ref(),
             freqs: None,
@@ -156,14 +162,56 @@ fn main() {
     );
     let window_lines: Vec<QspecZLine<'_>> = (0..N_Z)
         .map(|row| QspecZLine {
-            z: Z_LOW + (Z_HIGH - Z_LOW) * row as f64 / (N_Z - 1) as f64,
+            z: zs[row],
             iq: &window_iq[row],
             fit: window_fits[row].as_ref(),
             freqs: Some(&row_freqs[row]),
         })
         .collect();
 
-    let fixed_card = qspec_z_plot_div(&axis, &lines, Some(&states), "qspec-z", Some("qspec vs Z"));
+    // 通量调谐：把动窗卡片逐偏置的峰位拟成 SQUID 线型（真值在文件头，一并对拍）
+    let peaks: Vec<f64> = window_fits
+        .iter()
+        .map(|outcome| match outcome {
+            Ok(fit) => fit.result.model.fq,
+            Err(_failure) => f64::NAN,
+        })
+        .collect();
+    let flux = flux_fit(&zs, &peaks, ETA_HZ, ASYMMETRY);
+    match &flux {
+        Ok(fit) => {
+            let model = fit.result.model;
+            println!(
+                "通量拟合: f_max {:.4} → {:.4} GHz | z_offset {:.4} → {:.4} V | z_period {:.3} → {:.3} V | redchi {:.2e}",
+                F_MAX_HZ / 1e9,
+                model.f_max / 1e9,
+                Z_OFFSET,
+                model.z_offset,
+                Z_PERIOD,
+                model.z_period,
+                fit.result.redchi,
+            );
+            // 反解往返：把甜点频率调回去，应当落回甜点偏置
+            match fit.tune_to(model.f_max, None) {
+                Some(z) => println!("tune_to(f_max) → {z:.4} V（甜点 {:.4} V）", model.z_offset),
+                None => println!("tune_to(f_max) → 不可达（不合预期）"),
+            }
+        }
+        Err(err) => println!("通量拟合失败: {err}"),
+    }
+
+    let fixed_card = qspec_z_plot_div(
+        &axis,
+        &lines,
+        Some(&states),
+        "qspec-z",
+        Some("qspec vs Z"),
+        None,
+    );
+    let flux_arg = match &flux {
+        Ok(fit) => Some(Ok(fit)),
+        Err(error) => Some(Err(error)),
+    };
     // 公共轴对动窗卡片用不上（每行自带轴），传空切片
     let window_card = qspec_z_plot_div(
         &[],
@@ -171,6 +219,7 @@ fn main() {
         Some(&states),
         "qspec-z-window",
         Some("qspec vs Z - 动窗扫描（逐行频率轴）"),
+        flux_arg,
     );
 
     let html = format!(
