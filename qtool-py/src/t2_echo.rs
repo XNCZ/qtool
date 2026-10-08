@@ -86,7 +86,7 @@ impl PyT2EchoFit {
         }
     }
 
-    /// 实际参与拟合的那条 P1（必要时是翻正后的 `1 − P1`）。
+    /// 实际参与拟合的那条 P1；朝向原样交付，不做翻转。
     #[getter]
     fn p1<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.inner.p1.clone().into_pyarray(py)

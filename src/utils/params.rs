@@ -32,7 +32,7 @@ const PARAMS_STYLE: &str = "<style>\
 ///
 /// 形参:
 ///     rows: 各行（顺序即渲染顺序）
-///     note: 表下的提示行（求解器未收敛、取向被翻转等），None 表示不画
+///     note: 表下的提示行（求解器未收敛、时间常数欠约束等），None 表示不画
 ///
 /// 返回值:
 ///     自包含的 `<style>` + `<table class="qtool-params">`（含表头）+ 尾注片段

@@ -95,7 +95,7 @@ impl PyQspecFit {
         }
     }
 
-    /// 实际参与拟合的那条 P1（始终朝对的那条）。
+    /// 实际参与拟合的那条 P1；朝向原样交付，自估路径下可能是谷（`amp` 为负）。
     #[getter]
     fn p1<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.inner.p1.clone().into_pyarray(py)

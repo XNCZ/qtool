@@ -406,9 +406,9 @@ pub fn rabi_amp_fit(
     };
 
     let mut best: Option<(ModelResult<Cos>, bool)> = None;
-    for flipped in [false, true] {
+    for flip in [false, true] {
         // 投影反向使归一化变成 1 − P1，这才是倒置的真实形式
-        let oriented = orient(&prob, flipped);
+        let oriented = orient(&prob, flip);
         match fit_orient(amps, &oriented, weights.as_deref()) {
             Ok(result) => {
                 let take = match &best {
@@ -416,7 +416,7 @@ pub fn rabi_amp_fit(
                     None => true,
                 };
                 match take {
-                    true => best = Some((result, flipped)),
+                    true => best = Some((result, flip)),
                     false => {}
                 }
             }

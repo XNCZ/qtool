@@ -11,16 +11,19 @@
 //! `amplitude` 吸收 π 脉冲本身的不完美（激发不干净时起点不到 1），`offset` 吸收读出把 |1>
 //! 误判成 |0> 的那一部分——两者都是 SPAM，不该算进 T1（baseline 的文档原话）。
 //!
-//! **朝向**：未传标定中心时曲线的朝向是约定（自定轴的正负号本身任意），这里把它钉成 T1 的
-//! 物理朝向——**τ = 0 处 P1 = 1**：比特先被 π 脉冲摆到 |1>，然后才往下衰减。拟合出来的朝向
-//! 与它不符时按 `1 − P1` 翻过来重拟一次（做法照 qspec 的二次处理：先拟一次、按 `amplitude`
-//! 的符号判、必要时翻过来再拟）；传了标定中心时朝向由 g0 → 0、g1 → 1 定死，不再动它。
+//! **朝向**：曲线的物理朝向是 **τ = 0 处 P1 = 1**——比特先被 π 脉冲摆到 |1>，然后才往下
+//! 衰减——但本模块不做任何翻转，拟合出什么朝向就交付什么朝向：自定轴路径下朝向是投影方向
+//! 自身的约定（`amplitude` 为正即 τ = 0 落在高的一头），标定路径下由 g0 → 0、g1 → 1 定死。
+//! 自定轴路径的初值候选把镜像（朝上升）一支一并铺上，两条朝向都能直接收敛（见
+//! [`p0_candidates`]）；标定路径不铺——那里拟出上升是"标定与数据对不上"的信号。
+//! 线型对 `y ↦ 1 − P1` 封闭（自由 `offset` 吸收镜像），两种朝向残差恒等，`t1` 的值不受
+//! 朝向影响，`amplitude` 的符号本身留给调用方当判据。
 //!
 //! 这里只有"给一条曲线、还一组参数"的纯计算，不含实验语义：延时怎么排、读出怎么定轴、
 //! 标定值往哪写，都由调用方决定。
 
 use crate::superconductor::{StateCenters, p1, p1_sigma};
-use crate::utils::{max_value, min_value, orient};
+use crate::utils::{max_value, min_value};
 use lmfit::{Curve, Model, ModelResult};
 use rayon::prelude::*;
 
@@ -43,7 +46,8 @@ const OFFSET_P0: f64 = 0.0;
 ///
 /// 取常数而不取 `prob[0]`：起点是一个**单点**，噪声全落在它身上，而它本该是个已知的物理量
 /// （激发不干净、读出误判那些正是拟合要吸收的，初值不必替它们先打折）。自定轴路径上曲线按
-/// 投影极值归一化，起点同样是 1，同一个常数两条路都够用。
+/// 投影极值归一化，起点同样是 1，同一个常数两条路都够用；反过来的那一支由 [`p0_candidates`]
+/// 的 `mirror` 另铺一份。
 const AMPLITUDE_P0: f64 = 1.0;
 
 // =========================================================================
@@ -108,24 +112,38 @@ impl Curve for Decay {
 /// - `offset` 取 [`OFFSET_P0`] = 0：τ 大了以后比特已经弛豫回 |0>，P1 的渐近值就是 0——这是
 ///   物理，不必从数据里猜（读出误判那一部分正是拟合要吸收的，初值不必替它先占个位）。自定轴
 ///   路径上曲线按投影极值归一化，渐近端同样是 0；
-/// - `amplitude` 取 [`AMPLITUDE_P0`] = 1：起点在 |1> 上（朝向另说，见 [`t1_fit`] 的二次处理）；
+/// - `amplitude` 取 [`AMPLITUDE_P0`] = 1：起点在 |1> 上；
+/// - `mirror` 为真时把镜像支 `(offset, amplitude) → (1 − offset, −amplitude)` 一并铺上：
+///   自定轴路径的朝向本是约定，数据可能朝上升，镜像支让那条曲线不必从 `amplitude = 0`
+///   这个退化起点穿过去（`∂/∂t1 = amplitude·(τ/t1²)·e^{−τ/t1}` 在 `amplitude = 0` 处整列
+///   为零）。只对自定轴路径开（见 [`t1_fit`]）：标定路径拟出上升曲线是"标定与数据对不上"
+///   的信号，不替它补好起点；
 /// - `t1` 取窗口长度（`max(taus) − min(taus)`）的 [`T1_RATIOS`] 倍——这一维读不出来，只能铺开。
 ///
 /// 形参:
 ///     taus: 延时轴 (n,)
+///     mirror: 是否把镜像（朝上升）一支的初值一并铺上
 ///
 /// 返回值:
-///     初值列表，共 4 组
-fn p0_candidates(taus: &[f64]) -> Vec<Decay> {
+///     初值列表，共 4 组（`mirror` 为真时 8 组）
+fn p0_candidates(taus: &[f64], mirror: bool) -> Vec<Decay> {
     let span = max_value(taus) - min_value(taus);
-    T1_RATIOS
-        .iter()
-        .map(|ratio| Decay {
-            offset: OFFSET_P0,
-            amplitude: AMPLITUDE_P0,
-            t1: ratio * span,
-        })
-        .collect()
+    let mut branches = vec![(OFFSET_P0, AMPLITUDE_P0)];
+    match mirror {
+        true => branches.push((1.0 - OFFSET_P0, -AMPLITUDE_P0)),
+        false => {}
+    }
+    let mut out = Vec::with_capacity(branches.len() * T1_RATIOS.len());
+    for (offset, amplitude) in branches {
+        for ratio in T1_RATIOS {
+            out.push(Decay {
+                offset,
+                amplitude,
+                t1: ratio * span,
+            });
+        }
+    }
+    out
 }
 
 // =========================================================================
@@ -216,6 +234,7 @@ pub(crate) fn fit_once(
 ///     taus: 延时轴 (n,)
 ///     prob: 待拟合的 P1 曲线 (n,)
 ///     sigma: P1 域的逐点不确定度；None 表示不加权
+///     mirror: 初值候选是否铺上镜像（朝上升）一支，透传 [`p0_candidates`]
 ///
 /// 返回值:
 ///     残差最小的拟合结果；全部候选失败时返回错误
@@ -223,9 +242,10 @@ fn fit_candidates(
     taus: &[f64],
     prob: &[f64],
     sigma: Option<&[f64]>,
+    mirror: bool,
 ) -> Result<ModelResult<Decay>, T1Error> {
     let mut best: Option<ModelResult<Decay>> = None;
-    for p0 in p0_candidates(taus) {
+    for p0 in p0_candidates(taus, mirror) {
         match fit_once(taus, prob, &p0, sigma) {
             Ok(result) => {
                 let take = match &best {
@@ -251,8 +271,8 @@ fn fit_candidates(
 /// T1 拟合：IQ 投影为 P1，再拟一条带本底的指数衰减。
 ///
 /// 复刻 baseline 的 `t1_fit`，并补上它的一个缺口：baseline 的初值假定曲线是下降的，自定轴
-/// 判反（数据朝上升）时会从 `amplitude = 0` 这种退化初值起步。这里初值改成与朝向无关的写法
-/// （见 [`p0_candidates`]），朝向则按下面的默认钉住。
+/// 判反（数据朝上升）时会从 `amplitude = 0` 这种退化初值起步。这里初值改成与朝向无关的
+/// 写法（见 [`p0_candidates`]），朝向原样交付、不做翻转（见模块文档）。
 ///
 /// 形参:
 ///     taus: 延时轴 (n,)，单位 s
@@ -296,32 +316,16 @@ pub fn t1_fit(
         None => None,
     };
 
-    let trial = match fit_candidates(taus, &prob, weights.as_deref()) {
+    // 镜像（朝上升）一支只对自定轴路径铺：那里的朝向本是约定，上升曲线是合法形态；
+    // 标定路径的朝向由两个中心定死，拟出上升是"标定与数据对不上"的信号，不替它补好起点。
+    let trial = match fit_candidates(taus, &prob, weights.as_deref(), states.is_none()) {
         Ok(result) => result,
         Err(error) => return Err(error),
     };
-    // 自定轴路径下朝向该是 T1 的物理朝向：τ = 0 处 P1 在**高**的一头（先摆到 |1> 再衰减）。
-    // 判据取拟合出来的 `amplitude` 符号而不是端点比较——拟合把噪声平均掉了，符号要稳得多。
-    // 标定路径下朝向由 g0 → 0、g1 → 1 定死，负的 `amplitude` 是"标定与数据对不上"的信号，
-    // 翻过去只会把标定错误盖住，所以只对自定轴路径翻。
-    let inversion = states.is_none() && trial.model.amplitude < 0.0;
-    match inversion {
-        false => Ok(T1Fit {
-            result: trial,
-            p1: prob,
-        }),
-        true => {
-            // 翻转是 1 − P1，带负号的仿射变换，满量程不变，故两个朝向共用同一份 σ_P1
-            let orientation = orient(&prob, true);
-            match fit_candidates(taus, &orientation, weights.as_deref()) {
-                Ok(result) => Ok(T1Fit {
-                    result,
-                    p1: orientation,
-                }),
-                Err(error) => Err(error),
-            }
-        }
-    }
+    Ok(T1Fit {
+        result: trial,
+        p1: prob,
+    })
 }
 
 /// 批量 T1 拟合：对多条弛豫扫描并行执行 [`t1_fit`]，结果按输入顺序返回。
@@ -361,5 +365,88 @@ pub fn t1_fit_batch(
             .par_iter()
             .map(|line| t1_fit(taus, line, states, None))
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 延时轴：41 点、100 µs 窗；真值 T1 = 30 µs。
+    const TAU_MAX: f64 = 100e-6;
+    const T1_TRUE: f64 = 30e-6;
+
+    /// 两态中心（任意夹角的一对）。
+    const G0: Complex64 = Complex64::new(0.30, 0.10);
+    const G1: Complex64 = Complex64::new(0.42, 0.30);
+
+    /// 无噪声合成：P1 = exp(−τ/T1) 落到 `(zero, one)` 连线上；`inverted` 为真时把两个
+    /// 中心对调，自定轴随之反了（投影出的是上升曲线）。
+    fn clean_scan(inverted: bool) -> (Vec<f64>, Vec<Complex64>) {
+        let (zero, one) = match inverted {
+            true => (G1, G0),
+            false => (G0, G1),
+        };
+        let taus: Vec<f64> = (0..41).map(|k| TAU_MAX * k as f64 / 40.0).collect();
+        let iq = taus
+            .iter()
+            .map(|tau| zero + (one - zero) * (-tau / T1_TRUE).exp())
+            .collect();
+        (taus, iq)
+    }
+
+    /// 标定路径回收 T1；朝向原样交付——中心对调（投影反了）时不翻正，`amplitude` 为负、
+    /// 曲线留在反向，T1 的值不受影响。
+    #[test]
+    fn calibrated_fit_recovers_truth_without_flipping() {
+        let (taus, iq) = clean_scan(false);
+        let straight = StateCenters::new(vec![G0, G1]);
+        let swapped = StateCenters::new(vec![G1, G0]);
+
+        let forward = match t1_fit(&taus, &iq, Some(&straight), None) {
+            Ok(fit) => fit,
+            Err(err) => panic!("不该拟合失败：{err}"),
+        };
+        assert!((forward.result.model.t1 - T1_TRUE).abs() < 1e-7, "{}", forward.result.model.t1);
+        assert!(forward.result.model.amplitude > 0.0, "{}", forward.result.model.amplitude);
+
+        let reversed = match t1_fit(&taus, &iq, Some(&swapped), None) {
+            Ok(fit) => fit,
+            Err(err) => panic!("不该拟合失败：{err}"),
+        };
+        assert!((reversed.result.model.t1 - T1_TRUE).abs() < 1e-7, "{}", reversed.result.model.t1);
+        assert!(reversed.result.model.amplitude < 0.0, "{}", reversed.result.model.amplitude);
+        assert!(reversed.p1[0] < 0.5, "{}", reversed.p1[0]);
+    }
+
+    /// 镜像一支只对自定轴路径铺：`mirror = true` 的候选含上升支（`offset = 1`、
+    /// `amplitude = −1`），下降支也保留；`mirror = false`（标定路径）只有下降支。
+    #[test]
+    fn mirror_candidates_are_opt_in() {
+        let (taus, _) = clean_scan(false);
+
+        let mirrored = p0_candidates(&taus, true);
+        assert!(
+            mirrored
+                .iter()
+                .any(|p| p.amplitude < 0.0 && (p.offset - 1.0).abs() < 1e-12),
+            "{mirrored:?}"
+        );
+        assert!(mirrored.iter().any(|p| p.amplitude > 0.0), "{mirrored:?}");
+
+        let descending_only = p0_candidates(&taus, false);
+        assert!(descending_only.iter().all(|p| p.amplitude > 0.0), "{descending_only:?}");
+    }
+
+    /// 自定轴路径同理：朝向由数据自身的投影决定，判反了也不翻。
+    #[test]
+    fn auto_axis_keeps_the_data_orientation() {
+        let (taus, iq) = clean_scan(true);
+        let fit = match t1_fit(&taus, &iq, None, None) {
+            Ok(fit) => fit,
+            Err(err) => panic!("不该拟合失败：{err}"),
+        };
+        assert!((fit.result.model.t1 - T1_TRUE).abs() < 1e-6, "{}", fit.result.model.t1);
+        assert!(fit.result.model.amplitude < 0.0, "{}", fit.result.model.amplitude);
     }
 }
