@@ -29,19 +29,12 @@ use crate::utils::params::{ParamRow, params_table};
 use crate::utils::spectrum;
 use lmfit::Complex64;
 use plotly::Trace;
-use plotly::common::{DashType, Position};
-use plotly::layout::{Shape, ShapeLayer, ShapeLine, ShapeType};
+use plotly::common::Position;
 use plotly::Plot;
 
 /// plotly.js 的 CDN 引入标签；与 s21 / qspec / rabi 报告用的是同一个版本，这里转出以便 ramsey
 /// 报告自成一体（宿主页面只需要放一次）。
 pub use crate::superconductor::qspec::qspec_plot::PLOTLY_JS_CDN;
-
-/// T2\* 竖虚线的样式（与 rabi 那边 π 脉冲幅的灰细虚线同一套外观）。
-const T2_LINE_COLOR: &str = "gray";
-
-/// P1 面板在 `Panel::ALL` 里的序号：T2\* 的竖线画在它上面。
-const NORM_INDEX: usize = 3;
 
 /// 本实验的面板：三个实验共用的前四块（|S21| / 相位 / IQ / P1），外加第三行整宽的 P1 频谱。
 ///
@@ -137,8 +130,8 @@ pub fn ramsey_plot_div(
 
 /// 拟合结果的叠加层：`Ok` 时给出模型曲线、T2\* 与参数表，`Err` 时把错误交给页面。
 ///
-/// 把 `Result` 收成一个值之后，画 trace 与排布局的代码都不必再分支——只有真正不同的三处
-/// （P1 面板的模型曲线与竖线、表内容）去问它要东西。
+/// 把 `Result` 收成一个值之后，画 trace 与排布局的代码都不必再分支——只有真正不同的两处
+/// （P1 面板的模型曲线、表内容）去问它要东西。
 enum Overlay<'a> {
     Some {
         /// 数据延时网格上的模型值（算残差用）
@@ -146,8 +139,6 @@ enum Overlay<'a> {
         /// 密集网格上的模型值（画平滑的拟合曲线用）
         dense_taus: Vec<f64>,
         dense_model: Vec<f64>,
-        /// T2\*（P1 面板上的竖虚线）
-        t2: f64,
         /// 参数表各行
         rows: Vec<ParamRow<'a>>,
         /// 表下提示（未收敛）
@@ -175,14 +166,6 @@ impl Overlay<'_> {
                 dense_model,
                 ..
             } => Some((dense_taus, dense_model)),
-            Self::Absent { .. } => None,
-        }
-    }
-
-    /// T2\*；无拟合时为 None。
-    fn t2(&self) -> Option<f64> {
-        match self {
-            Self::Some { t2, .. } => Some(*t2),
             Self::Absent { .. } => None,
         }
     }
@@ -222,7 +205,6 @@ fn overlay<'a>(fit: &'a Result<&RamseyFit, &RamseyError>, taus: &[f64]) -> Overl
                 model,
                 dense_taus,
                 dense_model,
-                t2: result.result.model.decay,
                 rows: param_rows(result),
                 note: note_of(result),
             }
@@ -549,11 +531,7 @@ fn fit_plot(
             plot.add_trace(trace);
         }
     }
-    let mut settings = layout(&GRID_2X3, &panel_specs(overlay));
-    match overlay.t2() {
-        Some(t2) => settings = settings.shapes(vec![t2_line(t2)]),
-        None => {}
-    }
+    let settings = layout(&GRID_2X3, &panel_specs(overlay));
     plot.set_layout(settings);
     plot.set_configuration(interactive_config());
     plot
@@ -594,24 +572,4 @@ fn panel_specs(overlay: &Overlay) -> Vec<PanelSpec> {
             opts,
         })
         .collect()
-}
-
-/// T2\* 的竖虚线：它是这条扫描真正要产出的量，标在 P1 面板上（与数据同轴）。
-fn t2_line(t2: f64) -> Shape {
-    let (x_ref, y_ref) = axis_refs(NORM_INDEX);
-    Shape::new()
-        .shape_type(ShapeType::Line)
-        .layer(ShapeLayer::Below)
-        .x_ref(x_ref.as_str())
-        .y_ref(&format!("{y_ref} domain"))
-        .x0(t2)
-        .x1(t2)
-        .y0(0.0)
-        .y1(1.0)
-        .line(
-            ShapeLine::new()
-                .color(T2_LINE_COLOR)
-                .width(1.0)
-                .dash(DashType::Dash),
-        )
 }

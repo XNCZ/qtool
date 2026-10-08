@@ -11,8 +11,9 @@
 //!    baseline 用协方差椭圆，而椭圆的等值线就是高斯的等值线：香蕉、月牙、双峰这些形状会被
 //!    压成一个椭圆，68% 的那条线也可能只圈住四成的点。这里换成密度网格——**不假设任何
 //!    分布形状**，非凸、多峰都如实呈现，而且面积与画出来的轮廓出自同一个网格。
-//! 3. **可分性**——两两之间沿中心连线投到一维，扫出最优判别阈值与错分率，另给一个无阈值
-//!    的 AUC。云的全部用途就是判别它属于哪个态，所以"弥散有多大"最终要被读成"判别错多少"。
+//! 3. **可分性**——两两之间沿中心连线投到一维，按两团的稳健宽度定判别阈值（等密度交点；
+//!    两团等宽时它就是垂直平分线），报该阈值处的错分率，另给一个无阈值的 AUC。云的全部用途
+//!    就是判别它属于哪个态，所以"弥散有多大"最终要被读成"判别错多少"。
 //!
 //! **与 baseline 的口径差异**（有意为之，不是疏漏）：
 //!
@@ -23,10 +24,16 @@
 //!   同式。两个 σ 是**各团沿中心连线方向**的二阶矩展宽（∥ 即"沿连线"，不是各向同性的总宽度，
 //!   也不是垂直于连线的方向）。单团自身的展宽不单独报——判别永远是两团之间的事，脱离了对手的
 //!   "自身宽度"没有用处。
+//! - 判别阈值不取"在这批样本上错分最少的切点"：那是**事后最优**——一发落在对方位置上的跳变
+//!   就能把它拽过去（实测能拽到对方中心上，且挪动那一发 1e-12 会让它跳半个间距），而且只要
+//!   两团可分，它报出的错分率恒为 0，泄漏于是被藏掉。这里按两团的**稳健宽度**（16–84 分位
+//!   展宽，即上一条的 `spread`）取等密度交点 `σp / (σp + σq)`：等宽时它就是垂直平分线（也就
+//!   是"离哪个中心近"那条线），一侧无展宽则偏向该侧（与"不等协方差用 QDA"的走向一致），
+//!   两侧都退化为 0（全无噪）时退回 0.5；错分率在这个阈值处评估。
 
 use crate::superconductor::{StateCenters, direction};
 use crate::utils::density::{DensityGrid, Region};
-use crate::utils::{auc, best_threshold, quantile};
+use crate::utils::{auc, quantile};
 // 与 s21 / qspec / rabi 一致：对外直接用 `iq::Complex64`
 pub use lmfit::Complex64;
 
@@ -150,9 +157,9 @@ pub struct PairStats {
     pub state_q: usize,
     /// 中心间距，数据单位
     pub separation: f64,
-    /// 最优判别阈值：**判别边界与两中心连线的交点**（IQ 平面上的复数）
+    /// 判别阈值：**判别边界与两中心连线的交点**（IQ 平面上的复数）
     pub threshold: Complex64,
-    /// 该阈值处的错分率
+    /// 该阈值处的错分率（切点之上的算 q 态、其余算 p 态）
     pub error_rate: f64,
     /// 无阈值的可分性度量（曼-惠特尼统计量 `P(q 态的 P1 > p 态的 P1)`），0.5 完全重叠、1 完全分开
     pub auc: f64,
@@ -332,11 +339,23 @@ fn pair_stats(
             .collect()
     };
     let (p_scores, q_scores) = (project(cloud_p), project(cloud_q));
-    let (cut, error_rate) = best_threshold(&p_scores, &q_scores);
     let auc = auc(&p_scores, &q_scores);
-    // baseline 口径：两团各自沿连线展宽，按平方和合并
-    let (_, sigma_p) = along_axis(cloud_p, centers[state_p], centers[state_q]);
-    let (_, sigma_q) = along_axis(cloud_q, centers[state_q], centers[state_p]);
+    // 沿连线的两个展宽：分位口径（第一个返回值）定判别阈值，二阶矩口径（baseline 同式）算信噪比
+    let (spread_p, sigma_p) = along_axis(cloud_p, centers[state_p], centers[state_q]);
+    let (spread_q, sigma_q) = along_axis(cloud_q, centers[state_q], centers[state_p]);
+    // 判别阈值取两团高斯近似的**等密度交点**：中心落 0 与 1、高度相同、宽度各取稳健分位展宽时，
+    // 交点就在归一化坐标 `σp / (σp + σq)` 上。等宽即 0.5（垂直平分线），一侧无展宽则偏向它；
+    // 两侧都退化为 0（全无噪）时退回平分线
+    let width = spread_p + spread_q;
+    let cut = match width > 0.0 {
+        true => spread_p / width,
+        false => 0.5,
+    };
+    // 错分率在**这个**阈值处评估：切点之上的算 q 态、其余算 p 态，于是跳变/泄漏会如实显示成
+    // 它占的份额（不选事后最优切点，那个口径只要两团可分就恒报 0）
+    let errors = p_scores.iter().filter(|value| **value > cut).count()
+        + q_scores.iter().filter(|value| **value <= cut).count();
+    let error_rate = errors as f64 / (p_scores.len() + q_scores.len()) as f64;
     let noise = (sigma_p * sigma_p + sigma_q * sigma_q).sqrt();
     let snr = match noise > 0.0 {
         true => separation / noise,
