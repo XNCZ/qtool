@@ -17,12 +17,16 @@ exclude = ["docs/"]
 
 [features]
 default = ["plot"]
-plot = ["dep:plotly"]
+plot = ["dep:plotly", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 faer = "0.24.4"
 lmfit = "0.4"
 plotly = { version = "0.14.1", optional = true }
+# heatmap.rs 按 plotly.js 的 schema 直接发逐行的 heatmap trace（crate 的 HeatMap 没有
+# y0 / dy 字段，单点 y 会退化成默认厚度）；两者本来就在依赖树里（plotly 拉进来的）。
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 rayon = "1.12.0"
 roots = "0.0.8"
 contour = "0.13"

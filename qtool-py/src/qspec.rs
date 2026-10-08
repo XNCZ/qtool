@@ -151,23 +151,31 @@ impl PyQspecFit {
 /// 一条 Z 偏置处的 qspec 谱线：偏置 + 数据 + 该处的洛伦兹拟合。
 ///
 /// `fit=None` 表示这一行没拟合（报告里的该行退化成只用数据算出来的 P1），与 Rust 侧 `Err` 同一个出口。
+/// `freqs=None` 表示该行与其余行共用 `z_plot` 的公共轴；动窗扫描给每行自己的轴。
 #[pyclass(name = "QspecZLine", from_py_object)]
 #[derive(Clone)]
 pub struct PyQspecZLine {
     z: f64,
     iq: Vec<lmfit::Complex64>,
     fit: Option<CoreQspecFit>,
+    freqs: Option<Vec<f64>>,
 }
 
 #[pymethods]
 impl PyQspecZLine {
     #[new]
-    #[pyo3(signature = (z, iq, fit=None))]
-    fn new(z: f64, iq: Vec<lmfit::Complex64>, fit: Option<PyQspecFit>) -> Self {
+    #[pyo3(signature = (z, iq, fit=None, freqs=None))]
+    fn new(
+        z: f64,
+        iq: Vec<lmfit::Complex64>,
+        fit: Option<PyQspecFit>,
+        freqs: Option<Vec<f64>>,
+    ) -> Self {
         Self {
             z,
             iq,
             fit: fit.map(|value| value.inner),
+            freqs,
         }
     }
 
@@ -303,6 +311,10 @@ fn z_plot(
             fit: match &line.fit {
                 Some(result) => Ok(result),
                 None => Err(&CoreQspecError::EmptyData),
+            },
+            freqs: match &line.freqs {
+                Some(axis) => Some(axis.as_slice()),
+                None => None,
             },
         })
         .collect();

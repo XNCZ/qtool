@@ -1629,6 +1629,8 @@ dependencies = [
  "rand 0.10.2",
  "rayon",
  "roots",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

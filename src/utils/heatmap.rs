@@ -2,20 +2,26 @@
 //!
 //! 本模块是 crate 内部件（`utils` 下的模块都不作为外部接口），只服务仓库内的报告。
 //!
-//! 二维图占据左上区域；**下方**边线图显示点击点所在的 **row**（`z[row][·]` vs x），
-//! **右侧**边线图显示点击点所在的 **col**（`z[·][col]` vs y），两者带 continuous
+//! 二维图占据左上区域；**下方**边线图显示点击点所在的 **row**——用该行自己的采样对
+//! `(x, z[row][·])` 连成线（行内是连续的一段扫描，并集轴上的空格不进这里），**右侧**边线图
+//! 显示点击点所在的 **col**（`z[·][col]` vs y，行没覆盖的频率上留空），两者带 continuous
 //! error bar（`error_y.type = "data"`，逐点数组）。初始显示中间一行 / 中间一列。
+//!
+//! 热图**每行一条 trace**：plotly 的 x 是 per-trace 的，各行因此可以自带 x 坐标——动窗
+//! 扫描（每行只扫一小段）按 (x, 值) 成对画出来就是连续的一条带，没覆盖的频率上整行不着色。
+//! 稠密矩阵那套（并集列轴 + NaN 空格）只服务边线切片与点击取列，两者互不干扰。
 //!
 //! 交互靠片段内嵌的一小段 JS：`plotly_click` → 取最近的行列号 → `Plotly.restyle`
 //! 更新两条边线；x/y 轴用 `matches` 联动缩放。宿主页面仍需自行加载 plotly.js。
 
 use plotly::common::{
     AxisSide, ColorBar, ColorScale, ColorScaleElement, ErrorData, ErrorType, ExponentFormat, Font,
-    HoverInfo, Marker, Mode, Title,
+    Marker, Mode, Title,
 };
 use plotly::configuration::{Configuration, DoubleClick};
 use plotly::layout::{Axis, Layout, TicksDirection};
-use plotly::{HeatMap, Plot, Scatter, Trace};
+use plotly::{Plot, Scatter, Trace};
+use serde::Serialize;
 
 /// 热图色板。
 #[derive(Clone, Copy)]
@@ -101,6 +107,70 @@ pub(crate) struct Grid2d<'a> {
 
 const LINE_COLOR: &str = "#d62728";
 
+/// 热图里的一行：plotly 的 x 是 per-trace 的（逐行频率轴只能用多条 trace 表达），而 Rust
+/// 的 plotly crate 没有 `y0` / `dy` 字段（单点 `y` 会退化成默认厚度、铺满整条轴），所以
+/// 这一条按 plotly.js 的 schema 直接发 JSON；色板与 colorbar 复用 crate 的类型。
+#[derive(Clone, Serialize)]
+struct RowBand {
+    /// plotly trace 类型
+    #[serde(rename = "type")]
+    kind: &'static str,
+    /// 该行自己的 x 坐标（动窗扫描各行不同，共用轴时就是整条轴）
+    x: Vec<f64>,
+    /// 这一行在 y 轴上的中心
+    y0: f64,
+    /// 格子厚度（见 [`band_thickness`]）
+    dy: f64,
+    /// 单行取值，与 `x` 等长（plotly 收 `z[row][col]`，这里只有一行）
+    z: Vec<Vec<f64>>,
+    colorscale: ColorScale,
+    zmin: f64,
+    zmax: f64,
+    #[serde(rename = "showscale")]
+    show_scale: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    colorbar: Option<ColorBar>,
+    /// 热图不弹默认的坐标浮标：读数由气泡（整行面板）承担。"none" 只是不显示内容，
+    /// hover / click 事件照常派发，气泡和"点一下取该行该列到边线图"都依赖它们
+    /// （"skip" 会把整条 trace 从 hover 里摘掉）。
+    #[serde(rename = "hoverinfo")]
+    hover_info: &'static str,
+}
+
+impl Trace for RowBand {
+    /// trace 的 JSON；字段全是实数，序列化不会失败——真出错时给一个空对象，页面上少画
+    /// 一行色带，而不是整块图跟着崩掉。
+    fn to_json(&self) -> String {
+        match serde_json::to_string(self) {
+            Ok(json) => json,
+            Err(_invalid) => String::from("{}"),
+        }
+    }
+}
+
+/// 一行格子的厚度：本行中心向两侧各伸出半个行距（首末行只有一侧有邻居，取单侧间距），
+/// 与 plotly 单 trace 时算格子外延的规则一致。
+///
+/// 形参:
+///     y: 行中心轴 (n,)，须非空（调用方按行号调用）
+///     index: 行号
+///
+/// 返回值:
+///     该行的格子厚度；只有一行时退回 plotly 的默认厚度 1
+fn band_thickness(y: &[f64], index: usize) -> f64 {
+    let last = y.len() - 1;
+    match index == 0 {
+        true => match last == 0 {
+            true => 1.0,
+            false => y[1] - y[0],
+        },
+        false => match index == last {
+            true => y[last] - y[last - 1],
+            false => 0.5 * (y[index + 1] - y[index - 1]),
+        },
+    }
+}
+
 /// 渲染热图 + 右/下边线图的 HTML 片段（自包含 div，宿主需提供 plotly.js）。
 ///
 /// 形参:
@@ -121,11 +191,7 @@ pub(crate) fn heatmap(grid: &Grid2d<'_>, div_id: &str) -> String {
         true => cols / 2,
         false => 0,
     };
-    let row_values = slice_row(grid.z, mid_row, cols);
-    let row_err = match grid.z_err {
-        Some(matrix) => slice_row(matrix, mid_row, cols),
-        None => vec![f64::NAN; cols],
-    };
+    let (row_x, row_values, row_err) = row_slice(grid, mid_row);
     let col_values = slice_col(grid.z, mid_col, rows);
     let col_err = match grid.z_err {
         Some(matrix) => slice_col(matrix, mid_col, rows),
@@ -133,24 +199,9 @@ pub(crate) fn heatmap(grid: &Grid2d<'_>, div_id: &str) -> String {
     };
 
     let mut plot = Plot::new();
-    plot.add_trace(
-        HeatMap::new(grid.x.to_vec(), grid.y.to_vec(), grid.z.to_vec())
-            .color_scale(match grid.palette {
-                Palette::Turbo => turbo(),
-                Palette::RdBu => rdbu(),
-            })
-            .color_bar(
-                ColorBar::new()
-                    .title(Title::with_text(grid.value_title))
-                    .exponent_format(ExponentFormat::SI),
-            )
-            // 热图不弹默认的坐标浮标：读数由气泡（整行面板）承担。注意用 None 而不是
-            // Skip —— None 只是不显示内容，hover / click 事件照常派发，气泡和"点一下
-            // 取该行该列到边线图"都依赖它们；Skip 会把整条 trace 从 hover 里摘掉。
-            .hover_info(HoverInfo::None),
-    );
+    // 边线两条先发：点击取行列的 JS 按固定下标 restyle 它们（热图的色带 trace 从 2 起）
     plot.add_trace(row_trace(
-        grid.x.to_vec(),
+        row_x,
         row_values,
         row_err,
         grid.value_title,
@@ -165,6 +216,58 @@ pub(crate) fn heatmap(grid: &Grid2d<'_>, div_id: &str) -> String {
         "x3",
         "y3",
     ));
+
+    // 各行整理成 (行号, 该行的 x, 该行的取值)：动窗扫描的相邻行频率交错，落进并集轴后
+    // 非空格子本来就不相邻——按 (x, 值) 成对发出去，格子才回到连续的一条带。颜色标尺
+    // 一并在这里定下：它要取自整张图，不能边发边算，否则靠前的行只有自己那一段参与定标，
+    // 同一颜色在不同行代表不同的值。
+    let mut bands: Vec<(usize, Vec<f64>, Vec<f64>)> = Vec::new();
+    let (mut z_min, mut z_max) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (index, row) in grid.z.iter().enumerate() {
+        let mut row_x = Vec::new();
+        let mut row_z = Vec::new();
+        for (column, value) in row.iter().enumerate() {
+            match value.is_finite() {
+                true => {
+                    row_x.push(grid.x[column]);
+                    row_z.push(*value);
+                    z_min = z_min.min(*value);
+                    z_max = z_max.max(*value);
+                }
+                false => {}
+            }
+        }
+        // 整行没有有限值：这行什么都不画（plotly 也不收空的 z）
+        match row_x.is_empty() {
+            true => {}
+            false => bands.push((index, row_x, row_z)),
+        }
+    }
+    for (position, (index, row_x, row_z)) in bands.into_iter().enumerate() {
+        plot.add_trace(Box::new(RowBand {
+            kind: "heatmap",
+            x: row_x,
+            y0: grid.y[index],
+            dy: band_thickness(grid.y, index),
+            z: vec![row_z],
+            colorscale: match grid.palette {
+                Palette::Turbo => turbo(),
+                Palette::RdBu => rdbu(),
+            },
+            zmin: z_min,
+            zmax: z_max,
+            show_scale: position == 0,
+            colorbar: match position == 0 {
+                true => Some(
+                    ColorBar::new()
+                        .title(Title::with_text(grid.value_title))
+                        .exponent_format(ExponentFormat::SI),
+                ),
+                false => None,
+            },
+            hover_info: "none",
+        }));
+    }
     plot.set_layout(layout(grid));
     plot.set_configuration(interactive_config());
     let plot_div_id = format!("{div_id}-plot");
@@ -202,13 +305,15 @@ pub(crate) fn heatmap(grid: &Grid2d<'_>, div_id: &str) -> String {
   }};
   gd.on("plotly_click", function (ev) {{
     var points = ev.points || [];
-    if (!points.length || points[0].curveNumber !== 0) {{ return; }}
+    if (!points.length || points[0].curveNumber < 2) {{ return; }}
     var row = nearest(Y, points[0].y);
     var col = nearest(X, points[0].x);
-    var rowVals = Z[row];
+    // 横截图用点中那条色带自己的 (x, 值)：行内是连续的一段扫描，并集轴上的空格不进这里
+    var band = gd.data[points[0].curveNumber];
+    var bandErr = E ? [band.x.map(function (v) {{ return E[row][nearest(X, v)]; }})] : [null];
     var colVals = Z.map(function (r) {{ return r[col]; }});
-    Plotly.restyle(gd, {{ "y": [rowVals], "error_y.array": E ? [E[row]] : [null] }}, [1]);
-    Plotly.restyle(gd, {{ "x": [colVals], "error_x.array": E ? [E.map(function (r) {{ return r[col]; }})] : [null] }}, [2]);
+    Plotly.restyle(gd, {{ "x": [band.x], "y": [band.z[0]], "error_y.array": bandErr }}, [0]);
+    Plotly.restyle(gd, {{ "x": [colVals], "error_x.array": E ? [E.map(function (r) {{ return r[col]; }})] : [null] }}, [1]);
   }});
 }})();
 </script>
@@ -332,14 +437,47 @@ fn error_data(errors: Vec<f64>) -> ErrorData {
         .width(0)
 }
 
-fn slice_row(matrix: &[Vec<f64>], row: usize, width: usize) -> Vec<f64> {
-    match matrix.get(row) {
-        Some(values) => match values.len() == width {
-            true => values.clone(),
-            false => values.iter().copied().chain(std::iter::repeat(f64::NAN)).take(width).collect(),
-        },
-        None => vec![f64::NAN; width],
+/// 横截图的一条：该行自己的 (x, 取值, 误差)，丢掉非有限的取值。
+///
+/// 行内本来就是连续的一段扫描；并集轴（稠密矩阵的列轴）上那些 NaN 只是"这一行没扫到那里"
+/// 的空格，直接拿去画会把连线打断成一串孤点。
+///
+/// 形参:
+///     grid: 二维数据与两条轴
+///     row: 行号
+///
+/// 返回值:
+///     (该行自己的 x, 取值, 误差)，三者等长；行越界或该行全空时给三条空数组，
+///     没有误差矩阵（或误差行缺失）时误差全为 NaN
+fn row_slice(grid: &Grid2d<'_>, row: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let mut xs = Vec::new();
+    let mut values = Vec::new();
+    let mut errors = Vec::new();
+    let row_values = match grid.z.get(row) {
+        Some(row_values) => row_values,
+        None => return (xs, values, errors),
+    };
+    let row_errors = match grid.z_err {
+        Some(matrix) => matrix.get(row),
+        None => None,
+    };
+    for (column, value) in row_values.iter().enumerate() {
+        match value.is_finite() {
+            true => {
+                xs.push(grid.x[column]);
+                values.push(*value);
+                errors.push(match row_errors {
+                    Some(column_errors) => match column_errors.get(column) {
+                        Some(error) => *error,
+                        None => f64::NAN,
+                    },
+                    None => f64::NAN,
+                });
+            }
+            false => {}
+        }
     }
+    (xs, values, errors)
 }
 
 fn slice_col(matrix: &[Vec<f64>], col: usize, height: usize) -> Vec<f64> {

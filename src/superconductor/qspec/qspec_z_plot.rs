@@ -7,6 +7,10 @@
 //! - 产物是自包含 div，宿主页面需提供 plotly.js（见
 //!   [`qspec_plot::PLOTLY_JS_CDN`](crate::superconductor::qspec::qspec_plot::PLOTLY_JS_CDN)）。
 //!
+//! 各行的 XY 频率轴可以不同（动窗扫描：窗心逐偏置外推，每行只扫一小段）：行自带轴
+//! （[`QspecZLine::freqs`]）时按行用，热图按各轴的**并集**铺开、某行没覆盖到的格子留空；
+//! 不给则各行共用公共轴（[`qspec_z_plot_div`] 的第一个参数）。
+//!
 //! flux 调谐模型（`flux_tunable`）的拟合在 `qspec_z.rs`，尚未移植；本模块只画数据，
 //! 模型曲线与参数表等那边落地后，在下方线图上再叠一层即可（baseline 的
 //! `qspec_vs_z_plot(zs, peaks, result=...)` 那一步）。
@@ -56,12 +60,65 @@ pub struct QspecZLine<'a> {
     pub iq: &'a [Complex64],
     /// 该偏置处的洛伦兹拟合结果
     pub fit: Result<&'a QspecFit, &'a QspecError>,
+    /// 该行自己的 XY 驱动频率轴 (n,)，Hz；`None` 表示与其余行共用公共轴。
+    ///
+    /// 动窗扫描（窗心逐偏置外推、每行只扫一小段）用它把逐行的轴带进来；长度须与 `iq` 相同。
+    pub freqs: Option<&'a [f64]>,
+}
+
+/// 并集轴与逐行对齐。
+///
+/// 各行的频率轴一般不同：把全部样本按频率摊平排序，同频的挤进同一列，一趟扫出并集轴与每行
+/// 的列号（比逐行二分少一层"找不到"的出口）。某行没覆盖到的格子留 NaN——[`json_array`]
+/// 把它写成 `null`，plotly 天然留空；矩阵因此始终是稠密矩形（heatmap 的点击/restyle 在
+/// JS 里直接按 `Z[row][col]` 下标取值，吃不了参差行）。
+///
+/// 行轴与该行取值不等长时按 `zip` 截断到较短者。
+///
+/// 形参:
+///     rows: 逐行的 (频率轴, 取值)
+///
+/// 返回值:
+///     (并集轴升序无重复, 对照并集轴的稠密矩阵)
+fn align_rows(rows: &[(&[f64], Vec<f64>)]) -> (Vec<f64>, Vec<Vec<f64>>) {
+    let mut samples: Vec<(f64, usize, f64)> = Vec::new();
+    for (index, (freqs, values)) in rows.iter().enumerate() {
+        for (freq, value) in freqs.iter().zip(values.iter()) {
+            samples.push((*freq, index, *value));
+        }
+    }
+    samples.sort_by(|left, right| match left.0.partial_cmp(&right.0) {
+        Some(ordering) => ordering,
+        None => std::cmp::Ordering::Equal,
+    });
+
+    let mut axis: Vec<f64> = Vec::new();
+    let mut placements: Vec<(usize, usize, f64)> = Vec::with_capacity(samples.len());
+    for (freq, row, value) in samples {
+        match axis.last() {
+            Some(last) => match *last == freq {
+                true => {}
+                false => axis.push(freq),
+            },
+            None => axis.push(freq),
+        }
+        placements.push((axis.len() - 1, row, value));
+    }
+
+    let mut matrix = vec![vec![f64::NAN; axis.len()]; rows.len()];
+    for (column, row, value) in placements {
+        matrix[row][column] = value;
+    }
+    (axis, matrix)
 }
 
 /// 渲染 qspec vs Z 的扫描报告 div。
 ///
+/// 热图按各行频率轴的**并集**铺开（见 [`align_rows`]）：各行只在自己扫过的频率上有值，
+/// 没覆盖到的格子留空；各行的四面板气泡仍用该行自己的轴。
+///
 /// 形参:
-///     freqs_hz: 公共 XY 驱动频率轴 (n,)，Hz
+///     freqs_hz: 公共 XY 驱动频率轴 (n,)，Hz；某行自带轴（[`QspecZLine::freqs`]）时该行不用它
 ///     lines: 逐条谱线（按 Z 递增）
 ///     states: 各态标定中心；None 表示未标定，P1 由各线自身定轴（须与各行 `fit` 用的是
 ///             同一套中心，否则热图上的曲线不是被拟合的那条）
@@ -80,20 +137,26 @@ pub fn qspec_z_plot_div(
 ) -> String {
     let zs: Vec<f64> = lines.iter().map(|line| line.z).collect();
 
-    // 热图画的就是各线被拟合的那条 P1（与 [`qspec_fit_plot_div`] 的 P1 面板同一条曲线）；
-    // 该线没有拟合结果时退回原始投影，至少让数据可见。
-    let mut p1_matrix: Vec<Vec<f64>> = Vec::with_capacity(lines.len());
+    // 逐行解析出各自的轴与 P1：行自带轴就用它，没有就退回公共轴——解析之后所有行一视同仁，
+    // 热图与面板不再关心轴从哪来。热图画的就是各线被拟合的那条 P1（与 [`qspec_fit_plot_div`]
+    // 的 P1 面板同一条曲线）；该线没有拟合结果时退回原始投影，至少让数据可见。
+    let mut rows: Vec<(&[f64], Vec<f64>)> = Vec::with_capacity(lines.len());
     for line in lines {
+        let freqs = match line.freqs {
+            Some(axis) => axis,
+            None => freqs_hz,
+        };
         let prob = match &line.fit {
             Ok(fit) => fit.p1.clone(),
             Err(_) => p1(line.iq, states),
         };
-        p1_matrix.push(prob);
+        rows.push((freqs, prob));
     }
+    let (union, p1_matrix) = align_rows(&rows);
 
     let map = heatmap(
         &Grid2d {
-            x: freqs_hz,
+            x: &union,
             y: &zs,
             z: &p1_matrix,
             z_err: None,
@@ -119,7 +182,8 @@ pub fn qspec_z_plot_div(
     let mut templates = String::new();
     for (row, line) in lines.iter().enumerate() {
         let panel_base = format!("{div_id}-panel{row}");
-        let panel_html = qspec_fit_plot_div(freqs_hz, line.iq, states, None, line.fit, &panel_base, None);
+        let panel_html =
+            qspec_fit_plot_div(rows[row].0, line.iq, states, None, line.fit, &panel_base, None);
         templates.push_str(&format!(
             "<template id=\"{div_id}-tpl-{row}\"><div class=\"qtool-panel\">{panel_html}</div></template>\n"
         ));

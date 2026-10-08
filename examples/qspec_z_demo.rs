@@ -4,6 +4,10 @@
 //! 该线型的拟合在尚未移植的 `qspec_z.rs`）。每条线各自跑 `qspec_fit`，再交给
 //! `qspec_z_plot_div` 出报告：上方 P1 热图（hover 弹该 Z 的四面板）、下方参数 vs Z 线图。
 //!
+//! 两张卡片：上面一张固定宽窗（整段调谐范围共用一条公共轴，`QspecZLine::freqs` 留 `None`），
+//! 下面一张动窗扫描（窗心逐行外推到该行的真值峰位，每行自带频率轴，热图按各轴的并集铺开、
+//! 没覆盖到的格子留空）。
+//!
 //! 运行: cargo run --release --example qspec_z_demo
 
 use qtool::superconductor::StateCenters;
@@ -22,6 +26,9 @@ const SCAN_HZ: f64 = 20.0e6;
 const Z_LOW: f64 = -0.02;
 const Z_HIGH: f64 = 0.02;
 const N_Z: usize = 21;
+/// 动窗扫描的半宽与点数：窗心逐行外推，每行只扫自己这一段。
+const WINDOW_HZ: f64 = 15.0e6;
+const WINDOW_N: usize = 31;
 /// 真值的线宽与噪声。
 const FWHM_TRUE: f64 = 2.4e6;
 const NOISE: f64 = 0.10;
@@ -51,10 +58,26 @@ fn flux_tunable(z: f64) -> f64 {
 }
 
 /// 合成一条谱线：真值 P1 落到 |0>–|1> 连线上，再叠复高斯噪声。
-fn synthetic(seed: u64, fq_true: f64) -> (Vec<f64>, Vec<Complex64>) {
+///
+/// 形参:
+///     seed: 随机种子
+///     fq_true: 该行的真值峰位，Hz
+///     center_hz: 该行扫描窗的中心，Hz
+///     scan_hz: 该行扫描窗的半宽，Hz
+///     n_freq: 该行频点数
+///
+/// 返回值:
+///     (该行的频率轴, 该行的平均复数 IQ)
+fn synthetic(
+    seed: u64,
+    fq_true: f64,
+    center_hz: f64,
+    scan_hz: f64,
+    n_freq: usize,
+) -> (Vec<f64>, Vec<Complex64>) {
     let mut rng = StdRng::seed_from_u64(seed);
-    let freqs: Vec<f64> = (0..N_FREQ)
-        .map(|k| F_CENTER_HZ + SCAN_HZ * (2.0 * k as f64 / (N_FREQ - 1) as f64 - 1.0))
+    let freqs: Vec<f64> = (0..n_freq)
+        .map(|k| center_hz + scan_hz * (2.0 * k as f64 / (n_freq - 1) as f64 - 1.0))
         .collect();
     let truth = Lorentz {
         fq: fq_true,
@@ -83,7 +106,7 @@ fn main() {
     for row in 0..N_Z {
         let z = Z_LOW + (Z_HIGH - Z_LOW) * row as f64 / (N_Z - 1) as f64;
         let fq_true = flux_tunable(z);
-        let (freqs, iq) = synthetic(row as u64, fq_true);
+        let (freqs, iq) = synthetic(row as u64, fq_true, F_CENTER_HZ, SCAN_HZ, N_FREQ);
         axis = freqs;
         let outcome = qspec_fit(&axis, &iq, Some(&states), None);
         match &outcome {
@@ -105,15 +128,57 @@ fn main() {
             z: Z_LOW + (Z_HIGH - Z_LOW) * row as f64 / (N_Z - 1) as f64,
             iq: &iq_lines[row],
             fit: fits[row].as_ref(),
+            freqs: None,
         })
         .collect();
+
+    // 动窗扫描：窗心逐行外推到该行的真值峰位，每行只扫 WINDOW_HZ 的半宽，行轴因此各不相同。
+    let mut row_freqs: Vec<Vec<f64>> = Vec::with_capacity(N_Z);
+    let mut window_iq: Vec<Vec<Complex64>> = Vec::with_capacity(N_Z);
+    let mut window_fits = Vec::with_capacity(N_Z);
+    let (mut worst_khz, mut failures) = (0.0_f64, 0_usize);
+    for row in 0..N_Z {
+        let z = Z_LOW + (Z_HIGH - Z_LOW) * row as f64 / (N_Z - 1) as f64;
+        let fq_true = flux_tunable(z);
+        let (freqs, iq) = synthetic(1000 + row as u64, fq_true, fq_true, WINDOW_HZ, WINDOW_N);
+        let outcome = qspec_fit(&freqs, &iq, Some(&states), None);
+        match &outcome {
+            Ok(fit) => worst_khz = worst_khz.max((fit.result.model.fq - fq_true).abs() / 1e3),
+            Err(_failure) => failures += 1,
+        }
+        row_freqs.push(freqs);
+        window_iq.push(iq);
+        window_fits.push(outcome);
+    }
+    println!(
+        "动窗卡片: {N_Z} 行 x {WINDOW_N} 点（半宽 {:.1} MHz），失败 {failures} 行，最大峰位偏差 {worst_khz:.1} kHz",
+        WINDOW_HZ / 1e6
+    );
+    let window_lines: Vec<QspecZLine<'_>> = (0..N_Z)
+        .map(|row| QspecZLine {
+            z: Z_LOW + (Z_HIGH - Z_LOW) * row as f64 / (N_Z - 1) as f64,
+            iq: &window_iq[row],
+            fit: window_fits[row].as_ref(),
+            freqs: Some(&row_freqs[row]),
+        })
+        .collect();
+
+    let fixed_card = qspec_z_plot_div(&axis, &lines, Some(&states), "qspec-z", Some("qspec vs Z"));
+    // 公共轴对动窗卡片用不上（每行自带轴），传空切片
+    let window_card = qspec_z_plot_div(
+        &[],
+        &window_lines,
+        Some(&states),
+        "qspec-z-window",
+        Some("qspec vs Z - 动窗扫描（逐行频率轴）"),
+    );
 
     let html = format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>qtool qspec vs Z demo</title>\n{PLOTLY_JS_CDN}\n</head>\n\
-         <body style=\"margin:24px;background:#ffffff\">\n{}</body>\n</html>\n",
-        qspec_z_plot_div(&axis, &lines, Some(&states), "qspec-z", Some("qspec vs Z"))
+         <body style=\"margin:24px;background:#ffffff\">\n{fixed_card}\
+         <hr style=\"border:none;border-top:1px solid #e5e7eb;margin:24px 0\">\n{window_card}</body>\n</html>\n"
     );
     match std::fs::create_dir_all("plt") {
         Ok(()) => {}
