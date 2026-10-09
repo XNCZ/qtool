@@ -2,7 +2,7 @@
 //!
 //! 一次调用产出四面板图（|S21|、相位、IQ 平面、P1）+ 页脚的 HTML 片段，可直接插入汇总
 //! 报表 / iframe / Jupyter。图形由 plotly.js 在浏览器端渲染，本模块只生成 `<div>` 与
-//! `Plotly.newPlot` 调用（[`plotly::Plot::to_inline_html`]）；宿主页面需自行加载 plotly.js，
+//! `Plotly.newPlot` 调用（自带 config 的 `Plotly.newPlot` 片段）；宿主页面需自行加载 plotly.js，
 //! 可用 [`PLOTLY_JS_CDN`] 一行引入。
 //!
 //! 面板内容对齐 baseline `qspec_analysis.py::qspec_plot`：|S21| 与相位只画数据（拟合在 P1
@@ -12,14 +12,14 @@
 
 use crate::superconductor::qspec::qspec::{QspecError, QspecFit};
 use crate::superconductor::{StateCenters, p1, p1_sigma};
-use crate::utils::bubble::framize;
 use crate::utils::heatmap::{escape_html, interactive_config};
 use crate::utils::panels::{
-    AxisOpts, Cell, DATA_COLOR, FIT_COLOR, GRID_2X2, ONE_COLOR, PanelSpec, ResidualAxis, Titles,
-    ZERO_COLOR, axis_refs, color_samples, curve, dense_grid, layout, markers, pad,
-    projection_axis, projection_refs, ref_point, report_div, residual_axis_range, residual_markers,
-    series, value_bounds,
+    AxisOpts, CARD_WIDTH, Card, Cell, DATA_COLOR, FIT_COLOR, GRID_2X2, ONE_COLOR, PanelSpec,
+    ResidualAxis, Titles, ZERO_COLOR, axis_refs, block, card, color_samples, curve, dense_grid,
+    layout, markers, pad, projection_axis, projection_refs, ref_point, residual_axis_range,
+    residual_markers, series, value_bounds,
 };
+use crate::utils::data::{Column, Datum, Payload, Table, fit_row};
 
 use crate::utils::params::{ParamRow, params_table};
 use lmfit::Complex64;
@@ -31,14 +31,12 @@ use plotly::Plot;
 /// 这里转出以便 qspec 报告自成一体（宿主页面只需要放一次）。
 pub use crate::superconductor::s21::s21_plot::PLOTLY_JS_CDN;
 
-/// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）；尺寸相关的两条
-/// 规则由 [`size_style`] 单独生成。
+/// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）。
 const STYLE: &str = r#"<style>
 .qtool-qspec{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
 /* 高度跟着宽度走（比例即网格的设计宽高） */
 .qtool-qspec .qtool-plot{width:100%;max-height:85vh}
 .qtool-qspec .qtool-error{margin-top:6px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:13px}
-.qtool-qspec .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
 </style>"#;
 
 /// 把一条 qspec 谱线渲染成自包含的 HTML div。
@@ -56,8 +54,8 @@ const STYLE: &str = r#"<style>
 ///     frame: 可选外框：`Some(title)` 套上卡片框（`title` 非空时骑在上边线上），`None` 裸图
 ///
 /// 返回值:
-///     自包含的 `<div class="qtool-qspec">` 片段（图 + 页脚）；宿主页面需自行加载
-///     plotly.js（见 [`PLOTLY_JS_CDN`]）
+///     自包含的 `<div class="qtool-qspec">` 片段（图 + 页脚），并内蕴一份原始数据供下载
+///     （见 [`crate::utils::data`]）；宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
 pub fn qspec_fit_plot_div(
     freqs_hz: &[f64],
     iq: &[Complex64],
@@ -67,21 +65,181 @@ pub fn qspec_fit_plot_div(
     div_id: &str,
     frame: Option<&str>,
 ) -> String {
+    let report_data = payload(freqs_hz, iq, states, sigma, &fit, div_id);
+    qspec_card(freqs_hz, iq, states, sigma, fit, div_id, frame, Some(&report_data))
+}
+
+/// 行面板：嵌进 qspec vs Z 的气泡/浮层里的那一份，与独立报告同一套版式，只是**不内蕴载荷**——
+/// 宿主报告已经把这个 Z 点的数据放在自己的 `row_<i>` 子表里，再带一份就是同一份数据存两遍。
+///
+/// 形参:
+///     freqs_hz: 驱动频率轴 (n,)，Hz
+///     iq: 平均复数 IQ (n,)
+///     states: 各态标定中心
+///     fit: 拟合结果
+///     div_id: 面板 div 的 HTML id（宿主负责唯一）
+///
+/// 返回值:
+///     裸面板片段（无载荷、无外框、不画 error bar）
+pub(crate) fn qspec_panel_div(
+    freqs_hz: &[f64],
+    iq: &[Complex64],
+    states: Option<&StateCenters>,
+    fit: Result<&QspecFit, &QspecError>,
+    div_id: &str,
+) -> String {
+    qspec_card(freqs_hz, iq, states, None, fit, div_id, None, None)
+}
+
+/// 装配：四面板图 + 参数表 + 卡片。σ 与载荷由调用方给（行面板两样都不带）。
+///
+/// 形参:
+///     freqs_hz: 驱动频率轴 (n,)，Hz
+///     iq: 平均复数 IQ (n,)
+///     states: 各态标定中心
+///     sigma: IQ 域逐点不确定度；None 表示不画 error bar
+///     fit: 拟合结果
+///     div_id: 卡片 div 的 HTML id
+///     frame: 可选外框，见 [`qspec_fit_plot_div`]
+///     payload: 内蕴数据；None 表示这份片段不随卡片带载荷
+///
+/// 返回值:
+///     卡片片段
+fn qspec_card(
+    freqs_hz: &[f64],
+    iq: &[Complex64],
+    states: Option<&StateCenters>,
+    sigma: Option<&[f64]>,
+    fit: Result<&QspecFit, &QspecError>,
+    div_id: &str,
+    frame: Option<&str>,
+    payload: Option<&Payload>,
+) -> String {
     let overlay = overlay(&fit, freqs_hz);
     let plot = fit_plot(freqs_hz, iq, states, sigma, &fit, &overlay);
-    let plot_div_id = format!("{div_id}-plot");
-    let plot_html = plot.to_inline_html(Some(plot_div_id.as_str()));
-
-    let html = report_div(
-        "qtool-qspec",
-        STYLE,
-        div_id,
-        &GRID_2X2,
-        &plot_html,
+    let plot_html = crate::utils::data::plot_script(&plot, div_id);
+    let body = format!(
+        "{}{}",
+        block(div_id, "qtool-plot", (CARD_WIDTH, GRID_2X2.height), &plot_html),
         &overlay.table_html(),
     );
-    framize(&html, frame)
+    card(Card {
+        class: "qtool-qspec",
+        style: STYLE,
+        div_id,
+        body,
+        payload,
+        frame,
+    })
 }
+
+/// 报告的载荷：喂进拟合的输入（频率轴、复 IQ、IQ 域 σ）+ 投影后的 P1 / P1σ + 模型在数据点上的
+/// 值 + 拟合参数 + 标定中心。
+///
+/// P1 与图上同源：有拟合时取 `fit.p1`（实际拟合的那条，取向被翻转时它是翻转后的那条），否则现
+/// 投影一次（[`p1`]）；模型是拟合曲线在数据点上的取值，无拟合时整列按缺失落。供显示用的量
+/// （幅度、相位、残差、密集曲线）一概不入表——都能从这里的列推出来。
+///
+/// 形参:
+///     freqs_hz: 驱动频率轴 (n,)，Hz
+///     iq: 平均复数 IQ (n,)
+///     states: 各态标定中心
+///     sigma: IQ 域逐点不确定度；长度与 `iq` 不一致时按缺失处理（报告作图代码没有这一档校验，
+///            载荷按 t1 的口径落表）
+///     fit: 拟合结果
+///     div_id: 报告名（内蕴数据的 `name`，也是下载文件基名）
+///
+/// 返回值:
+///     载荷（`data` + `fits`，给了 `states` 再带一张 `states`）
+fn payload(
+    freqs_hz: &[f64],
+    iq: &[Complex64],
+    states: Option<&StateCenters>,
+    sigma: Option<&[f64]>,
+    fit: &Result<&QspecFit, &QspecError>,
+    div_id: &str,
+) -> Payload {
+    let prob = match fit {
+        Ok(result) => result.p1.clone(),
+        Err(_) => p1(iq, states),
+    };
+    let iq_sigma = match sigma {
+        Some(values) => match values.len() == iq.len() {
+            true => Some(values),
+            false => None,
+        },
+        None => None,
+    };
+    let prob_sigma = match iq_sigma {
+        Some(values) => Some(p1_sigma(iq, states, values)),
+        None => None,
+    };
+    let model = match fit {
+        Ok(result) => Some(result.result.model.at(freqs_hz)),
+        Err(_) => None,
+    };
+    let mut data = Table::new(
+        "data",
+        vec![
+            Column::real("freq", "Hz"),
+            Column::complex("iq", "a.u."),
+            Column::real("iq_sigma", "a.u."),
+            Column::real("p1", "1"),
+            Column::real("p1_sigma", "1"),
+            Column::real("model", "1"),
+        ],
+    );
+    for index in 0..freqs_hz.len() {
+        data.push(&[
+            Datum::Real(freqs_hz[index]),
+            Datum::Complex(iq[index].re, iq[index].im),
+            match iq_sigma {
+                Some(values) => Datum::Real(values[index]),
+                None => Datum::Missing,
+            },
+            Datum::Real(prob[index]),
+            match &prob_sigma {
+                Some(values) => Datum::Real(values[index]),
+                None => Datum::Missing,
+            },
+            match &model {
+                Some(values) => Datum::Real(values[index]),
+                None => Datum::Missing,
+            },
+        ]);
+    }
+    let mut report = Payload::new(div_id);
+    report.table(data);
+    match fit {
+        Ok(result) => {
+            // 逐拟合一行：参数各占一列、标准误用 `<参数>_stderr` 列（单位按参数名查表）
+            let (columns, row) = fit_row(&result.result.params, &PARAM_UNITS, &[]);
+            let mut fits = Table::new("fits", columns);
+            fits.push(&row);
+            report.table(fits);
+        }
+        Err(_) => {}
+    }
+    match states {
+        Some(centers) => {
+            let mut table = Table::new("states", vec![Column::complex("center", "a.u.")]);
+            for center in centers.as_slice() {
+                table.push(&[Datum::Complex(center.re, center.im)]);
+            }
+            report.table(table);
+        }
+        None => {}
+    }
+    report
+}
+
+/// 模型各参数的单位（无量纲写 `1`）；qspec vs Z 报告逐行复用同一张表。
+pub(crate) const PARAM_UNITS: [(&str, &str); 4] = [
+    ("fq", "Hz"),
+    ("fwhm", "Hz"),
+    ("amp", "1"),
+    ("offset", "1"),
+];
 
 /// 拟合结果的叠加层：`Ok` 时给出模型曲线与参数文本，`Err` 时把错误交给页面。
 ///

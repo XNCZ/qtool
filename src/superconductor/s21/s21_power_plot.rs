@@ -13,10 +13,12 @@
 //! - 产物是自包含 div，宿主页面需提供 plotly.js（见
 //!   [`s21_plot::PLOTLY_JS_CDN`](crate::superconductor::s21::s21_plot::PLOTLY_JS_CDN)）。
 
-use crate::superconductor::s21::s21::{Complex64, JAC_NAMES, S21Error, S21Model};
-use crate::superconductor::s21::s21_plot::{s21_fit_plot_div, unit_of};
-use crate::utils::panels::{DATA_COLOR, FIT_COLOR, GRID_2X2};
-use crate::utils::bubble::{Bubble, bubble, framize};
+use crate::superconductor::s21::s21::{Complex64, JAC_NAMES, S21Error, S21Model, model_at};
+use crate::superconductor::s21::s21_plot::{PARAM_UNITS, s21_panel_div, unit_of};
+use crate::utils::data::{Column, Datum, Payload, Table, fit_row};
+use crate::utils::panels::{
+    CARD_WIDTH, Card, block, card, DATA_COLOR, FIT_COLOR};
+use crate::utils::bubble::{Bubble, bubble};
 use crate::utils::heatmap::{
     Grid2d, Palette, axis_style, figure_font, heatmap, interactive_config,
 };
@@ -44,7 +46,8 @@ pub struct PowerLine<'a> {
 ///
 /// 返回值:
 ///     自包含的 `<div class="qtool-power">` 片段（两张热图 + 跟随光标的行面板气泡
-///     + 可钉住的浮层）。行标签由 `PowerLine::power` 派生。
+///     + 可钉住的浮层），并内蕴一份原始数据供下载（见 [`crate::utils::data`]）。
+///     行标签由 `PowerLine::power` 派生。
 pub fn s21_power_plot_div(
     freqs_hz: &[f64],
     lines: &[PowerLine<'_>],
@@ -145,7 +148,7 @@ pub fn s21_power_plot_div(
     let mut templates = String::new();
     for (row, line) in lines.iter().enumerate() {
         let panel_base = format!("{div_id}-panel{row}");
-        let panel_html = s21_fit_plot_div(freqs_hz, line.iq, line.sigma, line.fit, &panel_base, None);
+        let panel_html = s21_panel_div(freqs_hz, line.iq, line.sigma, line.fit, &panel_base);
         templates.push_str(&format!(
             "<template id=\"{div_id}-tpl-{row}\"><div class=\"qtool-panel\">{panel_html}</div></template>\n"
         ));
@@ -161,28 +164,105 @@ pub fn s21_power_plot_div(
         triggers: &[format!("{div_id}-amp-plot"), format!("{div_id}-phase-plot")],
         row_values: &powers,
         labels: &labels,
-        panel_width: GRID_2X2.width,
+        panel_width: CARD_WIDTH,
         scale: SCALE,
     });
 
-    // 图组（两张热图 + 下面两张线图）作为一个整体套框：`frame` 由调用方给
-    let title_bar_css = crate::utils::heatmap::title_bar_style();
-    let maps = framize(
-        &format!(
-            "<div class=\"qtool-power-maps\">{amp_map}{phase_map}\
-             <div class=\"qtool-power-lines\">{dip_plot}{param_plot}</div></div>"
-        ),
-        frame,
+    // 图组（两张热图 + 下面两张线图）+ 气泡 + 行模板，一起交给卡片
+    let style = format!("{STYLE}{}", crate::utils::heatmap::title_bar_style());
+    let body = format!(
+        "<div class=\"qtool-power-maps\">{amp_map}{phase_map}\
+         <div class=\"qtool-power-lines\">{dip_plot}{param_plot}</div></div>{bubble_html}{templates}"
     );
+    let report_data = payload(freqs_hz, lines, div_id);
+    card(Card {
+        class: "qtool-power",
+        style: style.as_str(),
+        div_id,
+        body,
+        payload: Some(&report_data),
+        frame,
+    })
+}
 
-    format!(
-        r##"<div class="qtool-power" id="{div_id}">
-{STYLE}{title_bar_css}
-{maps}
-{bubble_html}
-{templates}</div>
-"##
-    )
+/// 报告载荷：逐功率档的原始数据（读出频率轴、复 IQ、IQ 域 σ、模型）各占一张 `row_<i>` 子表；
+/// 逐档的 S21 拟合参数一行进 `fits`（`row` 列指向该档子表，`power` 是它的泵幅）。
+///
+/// 形参:
+///     freqs_hz: 公共读出频率轴 (n,)，Hz
+///     lines: 逐条频率线（按功率递增）
+///     div_id: 报告名（内蕴数据的 `name`，也是下载文件基名）
+///
+/// 返回值:
+///     载荷（`fits` 在前，随后逐档一张 `row_<i>`）
+fn payload(freqs_hz: &[f64], lines: &[PowerLine<'_>], div_id: &str) -> Payload {
+    let mut report = Payload::new(div_id);
+    let mut fits: Vec<(Vec<Column>, Vec<Datum>)> = Vec::new();
+    let mut series: Vec<Table> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let iq_sigma = match line.sigma {
+            Some(values) => match values.len() == line.iq.len() {
+                true => Some(values),
+                false => None,
+            },
+            None => None,
+        };
+        let model: Option<Vec<Complex64>> = match &line.fit {
+            Ok(result) => Some(freqs_hz.iter().map(|f| model_at(*f, &result.model)).collect()),
+            Err(_) => None,
+        };
+        let mut data = Table::new(
+            &format!("row_{index}"),
+            vec![
+                Column::real("freq", "Hz"),
+                Column::complex("iq", "a.u."),
+                Column::real("iq_sigma", "a.u."),
+                Column::complex("model", "a.u."),
+            ],
+        );
+        for point in 0..freqs_hz.len() {
+            data.push(&[
+                Datum::Real(freqs_hz[point]),
+                Datum::Complex(line.iq[point].re, line.iq[point].im),
+                match iq_sigma {
+                    Some(values) => Datum::Real(values[point]),
+                    None => Datum::Missing,
+                },
+                match &model {
+                    Some(values) => Datum::Complex(values[point].re, values[point].im),
+                    None => Datum::Missing,
+                },
+            ]);
+        }
+        series.push(data);
+        match &line.fit {
+            Ok(result) => {
+                fits.push(fit_row(
+                    &result.params,
+                    &PARAM_UNITS,
+                    &[
+                        (Column::reference("row", "1"), Datum::Real(index as f64)),
+                        (Column::real("power", "a.u."), Datum::Real(line.power)),
+                    ],
+                ));
+            }
+            Err(_) => {}
+        }
+    }
+    match fits.first() {
+        Some((columns, _)) => {
+            let mut table = Table::new("fits", columns.clone());
+            for (_, row) in &fits {
+                table.push(row);
+            }
+            report.table(table);
+        }
+        None => {}
+    }
+    for table in series {
+        report.table(table);
+    }
+    report
 }
 
 /// 一张"频率 vs 泵幅"的线图：x 用 log 轴（功率档是 geomspace，等 log 距），
@@ -450,17 +530,16 @@ fn line_plot_html(
     }
     plot.set_layout(layout);
     plot.set_configuration(interactive_config());
-    let plot_div_id = format!("{div_id}-plot");
-    plot.to_inline_html(Some(plot_div_id.as_str()))
+    crate::utils::data::plot_script(&plot, div_id)
 }
 
 /// 线图面板的外壳：图名行（可以是空的，空则不占位）+ plot div + 缩放注册 + 附加脚本。
-fn line_frame(div_id: &str, title_bar: &str, plot_html: &str, script: &str) -> String {
-    let register_script = crate::utils::resize::register_script(div_id);
+fn line_frame(name: &str, title_bar: &str, plot_html: &str, script: &str) -> String {
     format!(
-        "<div class=\"qtool-line\" id=\"{div_id}\">\
+        "<div class=\"qtool-line\" id=\"{name}\">\
          <div class=\"qtool-line-title\">{title_bar}</div>\
-         <div class=\"qtool-line-plot\">{plot_html}</div>{register_script}{script}</div>\n"
+         {}{script}</div>\n",
+        block(name, "qtool-line-plot", (18.0, 5.0), plot_html)
     )
 }
 
@@ -516,7 +595,7 @@ fn shift_label(delta_hz: f64) -> String {
 }
 
 const STYLE: &str = r#"<style>
-/* 不设 max-width：报告宽度跟着宿主容器走，宽屏就铺满（图由 ResizeObserver 跟尺寸重排） */
+/* 宽度上限由卡片容器给（与其余报告同一个设计宽度），图仍由 ResizeObserver 跟尺寸重排 */
 .qtool-power{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
 .qtool-power .qtool-power-maps{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
 /* 每张图至少 420px：容器放不下两张时自动换行、各占一行（窄屏不再互相压扁） */
@@ -526,7 +605,7 @@ const STYLE: &str = r#"<style>
 .qtool-power .qtool-power-lines>.qtool-line{flex:1 1 420px;min-width:0}
 /* 线图比二维图扁：容器高度 = plotly 上边距 + 纸面 + 下边距，18/5 是为"纸面高度与
    改动前一致"配的（756px 宽时容器 210px、纸面 120px） */
-.qtool-power .qtool-line-plot{width:100%;aspect-ratio:18/5;max-height:60vh}
+.qtool-power .qtool-line-plot{max-height:60vh}
 /* plotly 自带工具栏固定贴在容器右上角（top:2px），上边距压小后就会压在图上 ——
    挪到图名行右端（图名行高约 21px + 6px 外边距，工具栏高 19px，居中即 -26px） */
 .qtool-power .js-plotly-plot .modebar{top:-26px}

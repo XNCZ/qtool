@@ -81,9 +81,7 @@ pub(crate) struct Grid {
     pub(crate) xs: &'static [[f64; 2]],
     /// 各行的 y 域，自上而下
     pub(crate) ys: &'static [[f64; 2]],
-    /// 设计宽度（px）：卡片宽度上限，也是气泡里面板的布局宽度
-    pub(crate) width: f64,
-    /// 设计高度（px）：与 [`Grid::width`] 一起定下卡片的高宽比
+    /// 设计高度（px）：与 [`CARD_WIDTH`] 一起定下主图块的高宽比
     pub(crate) height: f64,
 }
 
@@ -100,9 +98,18 @@ const X_COL2: [f64; 2] = [0.72, 1.0];
 
 const Y_SINGLE: [f64; 2] = [0.0, 1.0];
 
-const Y_ROW0: [f64; 2] = [0.73, 1.0];
-const Y_ROW1: [f64; 2] = [0.365, 0.635];
-const Y_ROW2: [f64; 2] = [0.0, 0.27];
+/// 2×3 版式的行间距（纸面分数）：与 2×2 版式渲染出来的是同一条白带——那版式的纸面
+/// 矮（同宽下 562px），留白 0.18 × 562 ≈ 101px；本版式的纸面高（874px），故取
+/// 101 / 874 ≈ 0.116。这段白要放下"上一行的 x 轴标题"与"下一行的面板标题"两段文字，
+/// 与版式无关，所以按像素而不是按比例对齐。
+const GAP_2X3: f64 = 0.116;
+
+/// 2×3 版式的行高：三段平分"整幅减去两条行间距"。
+const ROW_2X3: f64 = (1.0 - 2.0 * GAP_2X3) / 3.0;
+
+const Y_ROW0: [f64; 2] = [1.0 - ROW_2X3, 1.0];
+const Y_ROW1: [f64; 2] = [Y_ROW0[0] - GAP_2X3 - ROW_2X3, Y_ROW0[0] - GAP_2X3];
+const Y_ROW2: [f64; 2] = [0.0, ROW_2X3];
 
 /// 3 列 × 1 行的版式（bloch）：一排放三个方正的投影格，不需要第二行。
 ///
@@ -110,7 +117,6 @@ const Y_ROW2: [f64; 2] = [0.0, 0.27];
 pub(crate) const GRID_1X3: Grid = Grid {
     xs: &[X_COL0, X_COL1, X_COL2],
     ys: &[Y_SINGLE],
-    width: 1000.0,
     height: 420.0,
 };
 
@@ -118,7 +124,6 @@ pub(crate) const GRID_1X3: Grid = Grid {
 pub(crate) const GRID_2X2: Grid = Grid {
     xs: &[X_LEFT, X_RIGHT],
     ys: &[Y_TOP, Y_BOTTOM],
-    width: 1000.0,
     height: 760.0,
 };
 
@@ -128,7 +133,6 @@ pub(crate) const GRID_2X2: Grid = Grid {
 pub(crate) const GRID_2X3: Grid = Grid {
     xs: &[X_LEFT, X_RIGHT],
     ys: &[Y_ROW0, Y_ROW1, Y_ROW2],
-    width: 1000.0,
     height: 1080.0,
 };
 
@@ -393,62 +397,89 @@ pub(crate) fn layout(grid: &Grid, panels: &[PanelSpec]) -> Layout {
     result
 }
 
-/// 尺寸相关的 CSS（卡片宽度上限 + 图的高宽比）：CSS 读不到 Rust 常量，所以由 [`Grid`] 的
-/// 设计尺寸插值生成，不在样式表里再写一份。
+/// 卡片设计宽度（px）：全仓唯一的那个宽度——卡片容器用它设上限，主图块的比例也按它算。
+pub(crate) const CARD_WIDTH: f64 = 1000.0;
+
+/// 一张图块：图 div（带自己的类名与内联比例）+ 该块的缩放注册。
+///
+/// **全仓的图 div 与缩放注册只出这一处**：报告只决定块放在版式的什么位置、配不配标题栏
+/// （标题栏是版式，留在报告自己的 `body` 里）。
 ///
 /// 形参:
-///     class: 报告的根类名（如 `qtool-s21`）
-///     grid: 该报告的网格（定下设计尺寸）
+///     name: 块名；图 div 的 id 是 `{name}-plot`（缩放注册按同一约定认图）
+///     class: 图 div 的类名（`qtool-plot` / `qtool-2d-plot` / `qtool-line-plot` …）
+///     ratio: 设计宽高比 (宽, 高)，写成内联 `aspect-ratio`
+///     html: 图 div 的内容（plotly 的初始化片段）
 ///
 /// 返回值:
-///     一条 `<style>` 规则
-pub(crate) fn size_style(class: &str, grid: &Grid) -> String {
+///     自包含的图块片段
+pub(crate) fn block(name: &str, class: &str, ratio: (f64, f64), html: &str) -> String {
     format!(
-        "<style>.{class}{{max-width:{width}px}}.{class} .qtool-plot{{aspect-ratio:{width}/{height}}}</style>",
-        width = grid.width,
-        height = grid.height
+        "<div class=\"{class}\" id=\"{id}-plot\" style=\"width:100%;aspect-ratio:{w}/{h}\">{html}</div>{script}",
+        id = escape_html(name),
+        w = ratio.0,
+        h = ratio.1,
+        script = crate::utils::resize::register_script(name),
     )
 }
 
-/// 报告外壳：根 div + 样式 + 图 + 缩放注册 + 尾部内容 + 页脚。
+/// 一份报告：一张卡片（结构见 [`card`]）。
+pub(crate) struct Card<'a> {
+    /// 根类名：报告自己的样式都挂在这个类下
+    pub(crate) class: &'a str,
+    /// 该报告自己的 `<style>`
+    pub(crate) style: &'a str,
+    /// 根容器的 id（一页多卡时由调用方保证唯一）
+    pub(crate) div_id: &'a str,
+    /// 图区到尾部之间的全部内容，按绘制顺序拼好（各块、脚本、参数表）
+    pub(crate) body: String,
+    /// 内蕴数据（见 [`crate::utils::data`]）：`Some` 时插入导出脚本与载荷 JSON，
+    /// **排在 body 之前**——图那段 `Plotly.newPlot` 会直接取 `window.qtoolExport.buttons`
+    /// 挂 modebar 按钮
+    pub(crate) payload: Option<&'a crate::utils::data::Payload>,
+    /// 卡片标题：`Some` 给描边卡片（标题骑在上边线上），`None` 给裸容器（只有宽度上限）
+    pub(crate) frame: Option<&'a str>,
+}
+
+/// 页脚样式：页脚由 [`card`] 统一输出，规则自然也只此一份——各报告不再各写一遍
+/// （写漏了页脚就退回浏览器默认的 16px 黑字，页脚与卡片差得越远越难发现）。
+const FOOTER_STYLE: &str =
+    "<style>.qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}</style>";
+
+/// 报告卡片：容器 + 样式 + 内蕴数据 + 内容 + 页脚；外框（描边与标题）只是容器的样式。
 ///
-/// 各实验的差别只有类名、自己的样式表和尾部内容（参数表或错误条），骨架逐字相同——s21 与
-/// qspec 原本各写一份，这里收成一处。
+/// 宽度上限挂在**容器**上而不是内容上——所以框必然贴着内容，不需要给框另设尺寸。
 ///
 /// 形参:
-///     class: 报告的根类名
-///     style: 该实验自己的 `<style>`（不含尺寸规则，那条走 [`size_style`]）
-///     div_id: 根 div 的 id
-///     grid: 该报告的网格（定下卡片的高宽比）
-///     plot_html: plotly 的内联图片段
-///     body_tail: 图之后的附加内容（参数表、错误条等），没有就给空串
+///     spec: 见 [`Card`]
 ///
 /// 返回值:
-///     报告片段（未套外框；外框由调用方走 `framize`）
-pub(crate) fn report_div(
-    class: &str,
-    style: &str,
-    div_id: &str,
-    grid: &Grid,
-    plot_html: &str,
-    body_tail: &str,
-) -> String {
+///     自包含的报告片段（已套外框）
+pub(crate) fn card(spec: Card<'_>) -> String {
     let mut html = String::new();
     html.push_str(&format!(
-        "<div class=\"{class}\" id=\"{}\">",
-        escape_html(div_id)
+        "<div class=\"{}\" id=\"{}\">",
+        spec.class,
+        escape_html(spec.div_id)
     ));
-    html.push_str(style);
-    html.push_str(&size_style(class, grid));
-    html.push_str(&format!("<div class=\"qtool-plot\">{plot_html}</div>"));
-    html.push_str(&crate::utils::resize::register_script(div_id));
-    html.push_str(body_tail);
+    html.push_str(spec.style);
+    html.push_str(FOOTER_STYLE);
+    match spec.payload {
+        Some(data) => {
+            html.push_str(crate::utils::data::EXPORT_SCRIPT);
+            html.push_str(&data.script());
+        }
+        None => {}
+    }
+    html.push_str(&spec.body);
+    // 页脚两行：生成时刻 + 版本。有载荷时用载荷里那一份（与下载数据里的是同一个值）
     html.push_str(&format!(
-        "<div class=\"qtool-footer\">Powered by qtool v{}</div>",
+        "<div class=\"qtool-footer\">{}<br>Powered by qtool v{}</div>",
+        crate::utils::data::footer_stamp(spec.payload),
         env!("CARGO_PKG_VERSION")
     ));
     html.push_str("</div>\n");
-    html
+    crate::utils::bubble::card_box(&html, spec.frame, CARD_WIDTH)
 }
 
 // =========================================================================

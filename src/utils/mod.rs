@@ -373,6 +373,8 @@ pub(crate) fn spectrum(x: &[f64], y: &[f64]) -> (Vec<f64>, Vec<f64>) {
 pub(crate) mod density;
 
 #[cfg(feature = "plot")]
+pub(crate) mod data;
+#[cfg(feature = "plot")]
 pub(crate) mod heatmap;
 #[cfg(feature = "plot")]
 pub(crate) mod panels;

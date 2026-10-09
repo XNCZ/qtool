@@ -271,9 +271,8 @@ pub(crate) fn heatmap(grid: &Grid2d<'_>, div_id: &str) -> String {
     plot.set_layout(layout(grid));
     plot.set_configuration(interactive_config());
     let plot_div_id = format!("{div_id}-plot");
-    let plot_html = plot.to_inline_html(Some(plot_div_id.as_str()));
-
-    let register_script = crate::utils::resize::register_script(div_id);
+    let plot_html = crate::utils::data::plot_script(&plot, div_id);
+    let plot_block = crate::utils::panels::block(div_id, "qtool-2d-plot", (5.0, 4.0), &plot_html);
     let caption = escape_html(grid.caption);
     let caption_css = title_bar_style();
     let json_x = json_array(grid.x);
@@ -288,8 +287,7 @@ pub(crate) fn heatmap(grid: &Grid2d<'_>, div_id: &str) -> String {
         r#"<div class="qtool-2d" id="{div_id}">
 {STYLE}{caption_css}
 <div class="qtool-2d-cap">{caption}</div>
-<div class="qtool-2d-plot">{plot_html}</div>
-{register_script}
+{plot_block}
 <script>
 (function () {{
   var X = {json_x}, Y = {json_y}, Z = {json_z}, E = {json_err};
@@ -611,5 +609,5 @@ const STYLE: &str = r#"<style>
 .qtool-2d{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
 /* 高度跟着宽度走（5:4 = 约 770×620 的设计比例），宽屏不会拉成一条扁带；
    max-height 只兜底"视口太矮"的情况，此时比例会让位 */
-.qtool-2d .qtool-2d-plot{width:100%;aspect-ratio:5/4;max-height:85vh}
+.qtool-2d .qtool-2d-plot{max-height:85vh}
 </style>"#;

@@ -17,13 +17,12 @@
 //! 实验侧的东西——相位解缠、差分剥相、随扫描量走的拟合——都不在这里（见 [`super::bloch`]）。
 
 use crate::superconductor::bloch::BlochVector;
-use crate::utils::bubble::framize;
+use crate::utils::data::{Column, Datum, Payload, Table};
 use crate::utils::heatmap::{axis_style, figure_font, interactive_config};
 use crate::utils::panels::{
+    CARD_WIDTH, Card, block, card,
     AxisOpts, Cell, GRID_1X3, ONE_COLOR, PanelSpec, Titles, ZERO_COLOR, axis_refs, color_samples,
-    curve, layout, report_div,
-};
-use crate::utils::resize::register_script;
+    curve, layout, };
 use plotly::common::{Anchor, ColorScale, ColorScaleElement, Font, HoverInfo, Line, Marker, Mode};
 use plotly::layout::{
     Annotation, AspectMode, Axis, Camera, DragMode3D, Layout, LayoutScene, Margin, ProjectionType,
@@ -120,15 +119,15 @@ impl Plane {
 }
 
 /// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）；上排的尺寸那条
-/// 由 [`crate::utils::panels::size_style`] 按网格生成，球那块自成一条。
+/// 比例由各自的图块（[`block`]）给：上排是设计网格的比例，球是 5:4。
 const STYLE: &str = r#"<style>
 .qtool-bloch{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
 /* 高度跟着宽度走（比例即网格的设计宽高） */
 .qtool-bloch .qtool-plot{width:100%;max-height:85vh}
 /* 球那块：与上排之间只留一道缝；比例取到接近正方——3D 场景按画布的高与宽里较小的一边放大，
    块越高球越大（高度另有 78vh 封顶，免得小窗口里把整页撑开） */
-.qtool-bloch .qtool-sphere{width:100%;aspect-ratio:5/4;max-height:78vh;margin-top:6px}
-.qtool-bloch .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
+.qtool-bloch .qtool-sphere{margin-top:6px}
+.qtool-bloch .qtool-sphere-plot{width:100%;max-height:78vh}
 </style>"#;
 
 /// 把一条布洛赫轨迹渲染成自包含的 HTML div。
@@ -140,8 +139,8 @@ const STYLE: &str = r#"<style>
 ///     frame: 可选外框：`Some(title)` 套上卡片框（`title` 非空时骑在上边线上），`None` 裸图
 ///
 /// 返回值:
-///     自包含的 `<div class="qtool-bloch">` 片段（上排三格 + 三维球 + 页脚）；宿主页面需自行加载
-///     plotly.js（见 [`PLOTLY_JS_CDN`]）
+///     自包含的 `<div class="qtool-bloch">` 片段（上排三格 + 三维球 + 页脚），并内蕴一份原始
+///     数据供下载（见 [`crate::utils::data`]）；宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
 pub fn bloch_plot_div(
     vector: &BlochVector,
     x_title: &str,
@@ -151,22 +150,61 @@ pub fn bloch_plot_div(
     // 点的颜色由激发概率定：|0> 端蓝、|1> 端红（三个投影格与球共用同一份）
     let prob = state_probability(vector);
     let planes = plane_plot(vector, &prob);
-    let plot_div_id = format!("{div_id}-plot");
-    let plot_html = planes.to_inline_html(Some(plot_div_id.as_str()));
-
-    // 球自成一图：div 名按 `{div_id}-sphere-plot` 起，好让 `register_script`（它注册的是
-    // `{名}-plot`）把这一块也纳入缩放
+    let planes_html = crate::utils::data::plot_script(&planes, div_id);
+    // 球自成一图：块名取 `{div_id}-sphere` ⇒ 图 div 是 `{div_id}-sphere-plot`，缩放按同一约定注册
     let sphere = sphere_plot(vector, &prob, x_title);
-    let sphere_div_id = format!("{div_id}-sphere-plot");
-    let sphere_html = sphere.to_inline_html(Some(sphere_div_id.as_str()));
-    let tail = format!(
-        "<div class=\"qtool-sphere\">{sphere_html}</div>{}{}",
-        register_script(&format!("{div_id}-sphere")),
-        highlight_script(div_id)
+    let sphere_name = format!("{div_id}-sphere");
+    let sphere_html = crate::utils::data::plot_script(&sphere, sphere_name.as_str());
+    let body = format!(
+        "{}<div class=\"qtool-sphere\">{}</div>{}",
+        block(div_id, "qtool-plot", (CARD_WIDTH, GRID_1X3.height), &planes_html),
+        block(sphere_name.as_str(), "qtool-sphere-plot", (5.0, 4.0), &sphere_html),
+        highlight_script(div_id),
     );
 
-    let html = report_div("qtool-bloch", STYLE, div_id, &GRID_1X3, &plot_html, &tail);
-    framize(&html, frame)
+    let report_data = payload(vector, div_id);
+    card(Card {
+        class: "qtool-bloch",
+        style: STYLE,
+        div_id,
+        body,
+        payload: Some(&report_data),
+        frame,
+    })
+}
+
+/// 报告载荷：轨迹本身——扫描轴与三个基上的泡利期望，逐点一行。
+///
+/// 这张报告没有拟合（相位解缠、剥相都在 [`crate::superconductor::bloch`] 里做完），所以只有这一张表；
+/// 点的着色标量 P1 是 `(1 − z)/2`，从列里一行就能推出来，不另存。
+///
+/// 形参:
+///     vector: 布洛赫向量（三基分量与扫描轴等长）
+///     div_id: 报告名（内蕴数据的 `name`，也是下载文件基名）
+///
+/// 返回值:
+///     载荷（一张 `data` 表）
+fn payload(vector: &BlochVector, div_id: &str) -> Payload {
+    let mut data = Table::new(
+        "data",
+        vec![
+            Column::real("axis", "a.u."),
+            Column::real("x", "1"),
+            Column::real("y", "1"),
+            Column::real("z", "1"),
+        ],
+    );
+    for point in 0..vector.axis.len() {
+        data.push(&[
+            Datum::Real(vector.axis[point]),
+            Datum::Real(vector.x[point]),
+            Datum::Real(vector.y[point]),
+            Datum::Real(vector.z[point]),
+        ]);
+    }
+    let mut report = Payload::new(div_id);
+    report.table(data);
+    report
 }
 
 /// 三个分量按 X/Y/Z 排好，供面板按下标取用。

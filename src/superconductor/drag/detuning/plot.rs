@@ -2,7 +2,7 @@
 //!
 //! 一次调用产出四面板图（|S21|、相位、IQ 平面、P1）+ 参数线图 + 参数表 + 页脚的 HTML 片段，
 //! 可直接插入汇总报表 / iframe / Jupyter。图形由 plotly.js 在浏览器端渲染，本模块只生成
-//! `<div>` 与 `Plotly.newPlot` 调用（[`plotly::Plot::to_inline_html`]）；宿主页面需自行加载
+//! `<div>` 与 `Plotly.newPlot` 调用（自带 config 的 `Plotly.newPlot` 片段）；宿主页面需自行加载
 //! plotly.js，可用 [`PLOTLY_JS_CDN`] 一行引入。
 //!
 //! 版式与系数扫描那份（`drag::coeff::plot`）逐格相同，只有两处不一样：横轴是载波失谐，以及
@@ -26,15 +26,15 @@
 
 use crate::superconductor::drag::detuning::valley::{Valley, ValleyError, ValleyFit};
 use crate::superconductor::{StateCenters, p1};
-use crate::utils::bubble::framize;
 use crate::utils::heatmap::{
     axis_style, escape_html, figure_font, interactive_config, json_array, title_bar_style,
 };
 use crate::utils::panels::{
-    AxisOpts, Cell, FIT_COLOR, GRID_2X2, ONE_COLOR, PanelSpec, Titles, ZERO_COLOR, axis_refs,
-    color_samples, curve, dense_grid, layout, projection_axis, projection_refs, ref_point,
-    report_div, series,
+    AxisOpts, CARD_WIDTH, Card, Cell, FIT_COLOR, GRID_2X2, ONE_COLOR, PanelSpec, Titles,
+    ZERO_COLOR, axis_refs, block, card, color_samples, curve, dense_grid, layout, projection_axis,
+    projection_refs, ref_point, series,
 };
+use crate::utils::data::{Column, Datum, Payload, Table, fit_row};
 use crate::utils::params::{ParamRow, params_table};
 use lmfit::{Complex64, ModelParams, ModelResult};
 use plotly::common::{DashType, ErrorData, ErrorType, Line, Marker, Mode, Position};
@@ -80,20 +80,18 @@ impl Panel {
     }
 }
 
-/// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）；尺寸相关的两条
-/// 规则由 [`crate::utils::panels::size_style`] 单独生成。
+/// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）。
 const STYLE: &str = r#"<style>
 .qtool-dragdetune{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
 /* 高度跟着宽度走（比例即网格的设计宽高） */
 .qtool-dragdetune .qtool-plot{width:100%;max-height:85vh}
 /* 参数线图：比四面板图扁，图名行与下拉框的样式走 utils::heatmap::title_bar_style */
 .qtool-dragdetune .qtool-line{margin-top:14px}
-.qtool-dragdetune .qtool-line-plot{width:100%;aspect-ratio:18/5;max-height:60vh}
+.qtool-dragdetune .qtool-line-plot{max-height:60vh}
 /* plotly 自带工具栏固定贴在容器右上角（top:2px），上边距压小后就会压在图上 —— 挪到图名行
    右端（图名行高约 21px + 6px 外边距，工具栏高 19px，居中即 -26px） */
 .qtool-dragdetune .qtool-line-plot .modebar{top:-26px}
 .qtool-dragdetune .qtool-error{margin-top:6px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:13px}
-.qtool-dragdetune .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
 </style>"#;
 
 /// 参数线图的下拉框里可画的四项：`(参数名, 显示名)`，顺序与 [`OrderScan::parameters`] 一致。
@@ -321,8 +319,8 @@ fn graded(rgb: [f64; 3], depth: f64) -> String {
 ///     frame: 可选外框：`Some(title)` 套上卡片框（`title` 非空时骑在上边线上），`None` 裸图
 ///
 /// 返回值:
-///     自包含的 `<div class="qtool-dragdetune">` 片段（图 + 参数线图 + 参数表 + 页脚）；
-///     宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
+///     自包含的 `<div class="qtool-dragdetune">` 片段（图 + 参数线图 + 参数表 + 页脚），并内蕴一份
+///     原始数据供下载（见 [`crate::utils::data`]）；宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
 pub fn drag_detuning_plot_div(
     orders: &[OrderScan<'_>],
     chosen: f64,
@@ -332,8 +330,7 @@ pub fn drag_detuning_plot_div(
 ) -> String {
     let layers = layers(orders, states);
     let plot = order_plot(&layers, chosen, states);
-    let plot_div_id = format!("{div_id}-plot");
-    let plot_html = plot.to_inline_html(Some(plot_div_id.as_str()));
+    let plot_html = crate::utils::data::plot_script(&plot, div_id);
 
     // 图下另起一块：谷参数 vs 阶数的线图（四面板图不动）。下拉框的样式与 s21 vs power /
     // qspec vs Z 那两张线图同一套，都在 utils::heatmap::title_bar_style 里。
@@ -342,16 +339,107 @@ pub fn drag_detuning_plot_div(
         param_panel(&format!("{div_id}-param"), &layers),
         order_table(&layers)
     );
-    let html = report_div(
-        "qtool-dragdetune",
-        &format!("{STYLE}{}", title_bar_style()),
-        div_id,
-        &GRID_2X2,
-        &plot_html,
+    let body = format!(
+        "{}{}",
+        block(div_id, "qtool-plot", (CARD_WIDTH, GRID_2X2.height), &plot_html),
         &tail,
     );
-    framize(&html, frame)
+    let report_data = payload(&layers, chosen, div_id);
+    card(Card {
+        class: "qtool-dragdetune",
+        style: &format!("{STYLE}{}", title_bar_style()),
+        div_id,
+        body,
+        payload: Some(&report_data),
+        frame,
+    })
 }
+
+/// 报告载荷：逐阶原始数据（失谐轴、复 IQ、P1、模型）各占一张 `row_<i>` 子表；谷拟合逐阶一行
+/// 进 `fits`（`row` 列指向该阶子表，`pairs` 是它的阶数）；标定值进 `params`。
+///
+/// 行序即报告里的阶序（按 `pairs` 升序）。
+///
+/// 形参:
+///     layers: 逐阶作图素材（已按 `pairs` 升序）
+///     chosen: 标定值，单位 Hz
+///     div_id: 报告名（内蕴数据的 `name`，也是下载文件基名）
+///
+/// 返回值:
+///     载荷（逐阶一张 `row_<i>`，随后 `fits` 与 `params`）
+fn payload(layers: &[Layer<'_>], chosen: f64, div_id: &str) -> Payload {
+    let mut report = Payload::new(div_id);
+    let mut fits: Vec<(Vec<Column>, Vec<Datum>)> = Vec::new();
+    // 逐阶子表攒着，等汇总表都落定再一起追加：CSV 只把第一张表当数据行，汇总表要在前
+    let mut series: Vec<Table> = Vec::new();
+    for (index, layer) in layers.iter().enumerate() {
+        let order = layer.order;
+        let model = order.model();
+        let curve = match &model {
+            Some(model) => Some(model.at(order.detunings_hz)),
+            None => None,
+        };
+        let mut data = Table::new(
+            &format!("row_{index}"),
+            vec![
+                Column::real("detuning", "Hz"),
+                Column::complex("iq", "a.u."),
+                Column::real("p1", "1"),
+                Column::real("model", "1"),
+            ],
+        );
+        for point in 0..order.detunings_hz.len() {
+            data.push(&[
+                Datum::Real(order.detunings_hz[point]),
+                Datum::Complex(order.iq[point].re, order.iq[point].im),
+                Datum::Real(layer.prob[point]),
+                match &curve {
+                    Some(values) => Datum::Real(values[point]),
+                    None => Datum::Missing,
+                },
+            ]);
+        }
+        series.push(data);
+        match &order.fit {
+            Ok(fit) => {
+                fits.push(fit_row(
+                    &fit.result.params,
+                    &PARAM_UNITS,
+                    &[
+                        (Column::reference("row", "1"), Datum::Real(index as f64)),
+                        (Column::real("pairs", "1"), Datum::Real(order.pairs as f64)),
+                    ],
+                ));
+            }
+            Err(_) => {}
+        }
+    }
+    match fits.first() {
+        Some((columns, _)) => {
+            let mut table = Table::new("fits", columns.clone());
+            for (_, row) in &fits {
+                table.push(row);
+            }
+            report.table(table);
+        }
+        None => {}
+    }
+    let mut params = Table::new("params", vec![Column::real("chosen", "Hz")]);
+    params.push(&[Datum::Real(chosen)]);
+    report.table(params);
+    for table in series {
+        report.table(table);
+    }
+    report
+}
+
+/// 谷模型各参数的单位：失谐轴是 Hz，谷心与半宽跟着 Hz。
+const PARAM_UNITS: [(&str, &str); 4] = [
+    ("centre", "Hz"),
+    ("fwhm", "Hz"),
+    ("amp", "1"),
+    ("offset", "1"),
+];
 
 /// 逐阶的作图素材：一阶一条，颜色由阶序位置推出。
 struct Layer<'a> {
@@ -766,8 +854,7 @@ fn param_panel(div_id: &str, layers: &[Layer<'_>]) -> String {
             .y_axis(axis_style(Axis::new().title(first.label))),
     );
     plot.set_configuration(interactive_config());
-    let plot_div_id = format!("{div_id}-plot");
-    let plot_html = plot.to_inline_html(Some(plot_div_id.as_str()));
+    let plot_html = crate::utils::data::plot_script(&plot, div_id);
 
     let options: Vec<String> = series
         .iter()
@@ -819,11 +906,11 @@ fn param_panel(div_id: &str, layers: &[Layer<'_>]) -> String {
 </script>"#,
         data.join(",")
     );
-    let register = crate::utils::resize::register_script(div_id);
     format!(
         "<div class=\"qtool-line\" id=\"{div_id}\">\
          <div class=\"qtool-line-title\">{title_bar}</div>\
-         <div class=\"qtool-line-plot\">{plot_html}</div>{register}{script}</div>\n"
+         {}{script}</div>\n",
+        block(div_id, "qtool-line-plot", (18.0, 5.0), &plot_html)
     )
 }
 

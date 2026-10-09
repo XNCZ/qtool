@@ -6,16 +6,16 @@
 //!
 //! 两张卡片：上面一张固定宽窗（整段调谐范围共用一条公共轴，`QspecZLine::freqs` 留 `None`），
 //! 下面一张动窗扫描（窗心逐行外推到该行的真值峰位，每行自带频率轴，热图按各轴的并集铺开、
-//! 没覆盖到的格子留空）。动窗那张还把逐行的峰位拟成通量调谐线型（`flux_fit`），报告最下方
+//! 没覆盖到的格子留空）。两张都把逐行的峰位拟成通量调谐线型（`flux_fit`），各自在报告最下方
 //! 出一张 f01 vs Z 的面板（峰位点 + 拟合曲线 + 参数表）。
 //!
 //! 运行: cargo run --release --example qspec_z_demo
 
 use qtool::superconductor::StateCenters;
-use qtool::superconductor::qspec::flux::flux_fit;
+use qtool::superconductor::qspec::flux::{FluxError, FluxFit, flux_fit};
 use qtool::superconductor::qspec::qspec_plot::PLOTLY_JS_CDN;
 use qtool::superconductor::qspec::qspec_z_plot::{QspecZLine, qspec_z_plot_div};
-use qtool::superconductor::qspec::{Complex64, Lorentz, qspec_fit};
+use qtool::superconductor::qspec::{Complex64, Lorentz, QspecError, QspecFit, qspec_fit};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
@@ -99,6 +99,36 @@ fn synthetic(
     (freqs, iq)
 }
 
+/// 逐行的拟合峰位：拟合失败的那行给 NaN（plotly 按断点跳过，也不进通量拟合）。
+///
+/// 形参:
+///     fits: 逐行的洛伦兹拟合结果
+///
+/// 返回值:
+///     逐行峰位 (n,)，Hz
+fn fit_peaks(fits: &[Result<QspecFit, QspecError>]) -> Vec<f64> {
+    fits.iter()
+        .map(|outcome| match outcome {
+            Ok(fit) => fit.result.model.fq,
+            Err(_not_fitted) => f64::NAN,
+        })
+        .collect()
+}
+
+/// 通量拟合结果转成报告要的形参：失败也给 `Some(Err(..))`，报告照画峰位点并在表下说明原因。
+///
+/// 形参:
+///     flux: 通量调谐拟合结果
+///
+/// 返回值:
+///     [`qspec_z_plot_div`] 的通量面板形参
+fn flux_arg(flux: &Result<FluxFit, FluxError>) -> Option<Result<&FluxFit, &FluxError>> {
+    match flux {
+        Ok(fit) => Some(Ok(fit)),
+        Err(error) => Some(Err(error)),
+    }
+}
+
 fn main() {
     let states = StateCenters::new(vec![G0, G1]);
     // 逐行偏置轴：两张卡片与通量拟合共用同一条
@@ -170,14 +200,7 @@ fn main() {
         .collect();
 
     // 通量调谐：把动窗卡片逐偏置的峰位拟成 SQUID 线型（真值在文件头，一并对拍）
-    let peaks: Vec<f64> = window_fits
-        .iter()
-        .map(|outcome| match outcome {
-            Ok(fit) => fit.result.model.fq,
-            Err(_failure) => f64::NAN,
-        })
-        .collect();
-    let flux = flux_fit(&zs, &peaks, ETA_HZ, ASYMMETRY);
+    let flux = flux_fit(&zs, &fit_peaks(&window_fits), ETA_HZ, ASYMMETRY);
     match &flux {
         Ok(fit) => {
             let model = fit.result.model;
@@ -200,18 +223,28 @@ fn main() {
         Err(err) => println!("通量拟合失败: {err}"),
     }
 
+    // 连续扫描卡片同样出通量调谐面板：用它自己那批（固定宽窗）拟合的峰位
+    let fixed_flux = flux_fit(&zs, &fit_peaks(&fits), ETA_HZ, ASYMMETRY);
+    match &fixed_flux {
+        Ok(fit) => println!(
+            "连续扫描卡片的通量拟合: f_max {:.4} → {:.4} GHz | z_offset {:.4} V | z_period {:.3} V | redchi {:.2e}",
+            F_MAX_HZ / 1e9,
+            fit.result.model.f_max / 1e9,
+            fit.result.model.z_offset,
+            fit.result.model.z_period,
+            fit.result.redchi,
+        ),
+        Err(err) => println!("连续扫描卡片的通量拟合失败: {err}"),
+    }
+
     let fixed_card = qspec_z_plot_div(
         &axis,
         &lines,
         Some(&states),
         "qspec-z",
         Some("qspec vs Z"),
-        None,
+        flux_arg(&fixed_flux),
     );
-    let flux_arg = match &flux {
-        Ok(fit) => Some(Ok(fit)),
-        Err(error) => Some(Err(error)),
-    };
     // 公共轴对动窗卡片用不上（每行自带轴），传空切片
     let window_card = qspec_z_plot_div(
         &[],
@@ -219,7 +252,7 @@ fn main() {
         Some(&states),
         "qspec-z-window",
         Some("qspec vs Z - 动窗扫描（逐行频率轴）"),
-        flux_arg,
+        flux_arg(&flux),
     );
 
     let html = format!(

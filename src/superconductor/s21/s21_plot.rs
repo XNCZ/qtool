@@ -2,20 +2,20 @@
 //!
 //! 一次调用产出四面板图（|S21|、相位、IQ、归一化圆）+ 参数表 + 页脚的 HTML 片段，
 //! 可直接插入汇总报表 / iframe / Jupyter。图形由 plotly.js 在浏览器端渲染，本模块只
-//! 生成 `<div>` 与 `Plotly.newPlot` 调用（[`plotly::Plot::to_inline_html`]）；宿主页面
+//! 生成 `<div>` 与 `Plotly.newPlot` 调用（自带 config 的 `Plotly.newPlot` 片段）；宿主页面
 //! 需自行加载 plotly.js，可用 [`PLOTLY_JS_CDN`] 一行引入。
 //!
 //! 面板布局与配色对齐 baseline `s12_analysis.py::fit` 的四面板图；相位面板以**频率**为
 //! 自变量做线性去趋势，且数据与拟合曲线共用同一条趋势线（baseline 各自独立 detrend，
 //! 两条曲线可能整体错开；此处取同趋势以保证重合）。
 
-use crate::utils::bubble::framize;
 use crate::utils::heatmap::{escape_html, interactive_config};
 use crate::utils::panels::{
-    AxisOpts, Cell, DATA_COLOR, FIT_COLOR, GRID_2X2, PanelSpec, ResidualAxis, Titles, axis_refs,
-    curve, dense_grid, layout, markers, pad, report_div, residual_axis_range,
+    AxisOpts, CARD_WIDTH, Card, Cell, DATA_COLOR, FIT_COLOR, GRID_2X2, PanelSpec, ResidualAxis,
+    Titles, axis_refs, block, card, curve, dense_grid, layout, markers, pad, residual_axis_range,
     residual_markers, value_bounds,
 };
+use crate::utils::data::{Column, Datum, Payload, Table, fit_row, plot_script};
 use crate::utils::params::{ParamRow, params_table};
 use crate::superconductor::s21::{
     Complex64, JAC_NAMES, S21Error, S21Model, background_at, model_at, notch_at,
@@ -30,14 +30,12 @@ use plotly::{Plot, Scatter};
 pub const PLOTLY_JS_CDN: &str =
     r#"<script src="https://cdn.plot.ly/plotly-3.0.1.min.js" charset="utf-8"></script>"#;
 
-/// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）；尺寸相关的两条
-/// 规则由 [`crate::utils::panels::size_style`] 单独生成。
+/// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）。
 const STYLE: &str = r#"<style>
 .qtool-s21{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
 /* 高度跟着宽度走（比例即网格的设计宽高；气泡里宽度正好是设计宽度 ⇒ 仍是设计高度） */
 .qtool-s21 .qtool-plot{width:100%;max-height:85vh}
 .qtool-s21 .qtool-error{margin-top:6px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:13px}
-.qtool-s21 .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
 </style>"#;
 
 /// 把一条 S21 线渲染成自包含的 HTML div。
@@ -54,8 +52,8 @@ const STYLE: &str = r#"<style>
 ///            `None` 裸图。嵌进气泡/浮层的行面板传 `None`
 ///
 /// 返回值:
-///     自包含的 `<div class="qtool-s21">` 片段（图 + 参数表 + 页脚）；
-///     宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
+///     自包含的 `<div class="qtool-s21">` 片段（图 + 参数表 + 页脚），并内蕴一份原始数据供
+///     下载（见 [`crate::utils::data`]）；宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
 pub fn s21_fit_plot_div(
     freqs_hz: &[f64],
     iq: &[Complex64],
@@ -64,27 +62,144 @@ pub fn s21_fit_plot_div(
     div_id: &str,
     frame: Option<&str>,
 ) -> String {
+    let report_data = payload(freqs_hz, iq, sigma, fit, div_id);
+    s21_card(freqs_hz, iq, sigma, fit, div_id, frame, Some(&report_data))
+}
+
+/// 行面板：嵌进 s21 vs power 的气泡/浮层里的那一份，与独立报告同一套版式，只是**不内蕴载荷**——
+/// 宿主报告已经把这个功率档的数据放在自己的 `row_<i>` 子表里，再带一份就是同一份数据存两遍。
+///
+/// 形参:
+///     freqs_hz: 读出频率轴 (n,)，Hz
+///     iq: 该档的复数 IQ 数组 (n,)
+///     sigma: 逐点测量不确定度
+///     fit: 拟合结果
+///     div_id: 面板 div 的 HTML id（宿主负责唯一）
+///
+/// 返回值:
+///     裸面板片段（无载荷、无外框）
+pub(crate) fn s21_panel_div(
+    freqs_hz: &[f64],
+    iq: &[Complex64],
+    sigma: Option<&[f64]>,
+    fit: Result<&ComplexResult<S21Model>, &S21Error>,
+    div_id: &str,
+) -> String {
+    s21_card(freqs_hz, iq, sigma, fit, div_id, None, None)
+}
+
+/// 装配：四面板图 + 参数表 + 卡片。载荷由调用方给（行面板不带）。
+///
+/// 形参:
+///     freqs_hz: 读出频率轴 (n,)，Hz
+///     iq: 该档的复数 IQ 数组 (n,)
+///     sigma: 逐点测量不确定度
+///     fit: 拟合结果
+///     div_id: 卡片 div 的 HTML id
+///     frame: 可选外框，见 [`s21_fit_plot_div`]
+///     payload: 内蕴数据；None 表示这份片段不随卡片带载荷
+///
+/// 返回值:
+///     卡片片段
+fn s21_card(
+    freqs_hz: &[f64],
+    iq: &[Complex64],
+    sigma: Option<&[f64]>,
+    fit: Result<&ComplexResult<S21Model>, &S21Error>,
+    div_id: &str,
+    frame: Option<&str>,
+    payload: Option<&Payload>,
+) -> String {
     let data = DataView::new(freqs_hz, iq, sigma);
     let overlay = overlay(fit, freqs_hz, &data);
     let plot = fit_plot(&data, &overlay);
-    let plot_div_id = format!("{div_id}-plot");
-    let plot_html = plot.to_inline_html(Some(plot_div_id.as_str()));
-
-    let html = report_div(
-        "qtool-s21",
-        STYLE,
-        div_id,
-        &GRID_2X2,
-        &plot_html,
+    let plot_html = plot_script(&plot, div_id);
+    let body = format!(
+        "{}{}",
+        block(div_id, "qtool-plot", (CARD_WIDTH, GRID_2X2.height), &plot_html),
         &overlay.table_html(),
     );
-    framize(&html, frame)
+    card(Card {
+        class: "qtool-s21",
+        style: STYLE,
+        div_id,
+        body,
+        payload,
+        frame,
+    })
+}
+
+/// 报告载荷：喂进拟合的输入（频率、复数 IQ、逐点 σ）+ 模型在数据点上的取值 + 参数表。
+///
+/// 形参:
+///     freqs_hz: 读出频率数组 (n,)，Hz
+///     iq: 该线的复数 IQ 数组 (n,)
+///     sigma: 逐点测量不确定度；长度与 `iq` 不一致时按缺失落
+///     fit: 拟合结果；`Err` 时只有数据表
+///     div_id: 报告名（同时是下载文件的基名）
+///
+/// 返回值:
+///     载荷（表按 `data`、`fits` 的次序）
+fn payload(
+    freqs_hz: &[f64],
+    iq: &[Complex64],
+    sigma: Option<&[f64]>,
+    fit: Result<&ComplexResult<S21Model>, &S21Error>,
+    div_id: &str,
+) -> Payload {
+    let iq_sigma = match sigma {
+        Some(values) => match values.len() == iq.len() {
+            true => Some(values),
+            false => None,
+        },
+        None => None,
+    };
+    let model: Option<Vec<Complex64>> = match fit {
+        Ok(result) => Some(freqs_hz.iter().map(|f| model_at(*f, &result.model)).collect()),
+        Err(_) => None,
+    };
+    let mut data = Table::new(
+        "data",
+        vec![
+            Column::real("freq", "Hz"),
+            Column::complex("iq", "a.u."),
+            Column::real("iq_sigma", "a.u."),
+            Column::complex("model", "a.u."),
+        ],
+    );
+    for index in 0..freqs_hz.len() {
+        data.push(&[
+            Datum::Real(freqs_hz[index]),
+            Datum::Complex(iq[index].re, iq[index].im),
+            match iq_sigma {
+                Some(values) => Datum::Real(values[index]),
+                None => Datum::Missing,
+            },
+            match &model {
+                Some(values) => Datum::Complex(values[index].re, values[index].im),
+                None => Datum::Missing,
+            },
+        ]);
+    }
+    let mut report = Payload::new(div_id);
+    report.table(data);
+    match fit {
+        Ok(result) => {
+            // 逐拟合一行：11 个拟合参数 + 2 个派生量，各带 `<参数>_stderr` 列
+            let (columns, row) = fit_row(&result.params, &PARAM_UNITS, &[]);
+            let mut fits = Table::new("fits", columns);
+            fits.push(&row);
+            report.table(fits);
+        }
+        Err(_) => {}
+    }
+    report
 }
 
 /// 拟合四面板的 Plotly 图对象（不含标题与参数表）。
 ///
-/// 供需要自行组装页面或懒渲染的调用方使用：[`plotly::Plot::to_inline_html`] 可产出
-/// 片段，[`s21_fit_plot_div`] 即在此基础上加标题与参数表。
+/// 供需要自行组装页面的调用方使用：`plotly::Plot` 可自行序列化，[`s21_fit_plot_div`]
+/// 即在此基础上加图块、参数表与页脚。
 ///
 /// 形参:
 ///     freqs_hz: 读出频率数组 (n,)，Hz
@@ -363,12 +478,35 @@ fn describe(name: &str) -> &'static str {
     }
 }
 
-/// 参数的单位后缀：一律 SI 基本单位（频率 Hz、时间 s、相位 rad），量纲为一的不带单位。
+/// 参数的单位（SI 基本单位；量纲为一的写 `1`，任意单位写 `a.u.`）：载荷与显示同源。
+pub(crate) const PARAM_UNITS: [(&str, &str); 13] = [
+    ("fr", "Hz"),
+    ("ql", "1"),
+    ("qc", "1"),
+    ("theta", "rad"),
+    ("ap", "1"),
+    ("tau", "s"),
+    ("a", "1"),
+    ("b", "1"),
+    ("phi", "rad"),
+    ("zc_re", "a.u."),
+    ("zc_im", "a.u."),
+    ("qi", "1"),
+    ("kappa_ex", "Hz"),
+];
+
+/// 参数的单位后缀（显示用）：只有 Hz/s/rad 带后缀，量纲为一与任意单位都不显示。
+///
+/// 形参:
+///     name: 参数名
+///
+/// 返回值:
+///     `" Hz"` / `" s"` / `" rad"`；其余参数给空串
 pub(crate) fn unit_of(name: &str) -> &'static str {
-    match name {
-        "fr" | "kappa_ex" => " Hz",
-        "tau" => " s",
-        "theta" | "phi" => " rad",
+    match crate::utils::data::param_unit(&PARAM_UNITS, name) {
+        "Hz" => " Hz",
+        "s" => " s",
+        "rad" => " rad",
         _ => "",
     }
 }

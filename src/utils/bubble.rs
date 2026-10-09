@@ -10,7 +10,7 @@
 //! 另外这里导出 [`CARD_STYLE`]：那套"漫画卡片"外壳（描边/圆角/硬阴影）宿主也可以拿去
 //! 当图组的外框用。
 //!
-//! 交互：hover 到热图（curveNumber 0）→ 气泡贴着光标显示该行面板；双击 → 在气泡当下
+//! 交互：hover 到热图色带 → 气泡贴着光标显示该行面板；双击 → 在气泡当下
 //! 的位置钉成固定浮层（可多个、按行去重、允许重叠，各自带 × 关闭）；光标离开二维图
 //! 区域即收起气泡。浮层里挂的是独立的 plotly 实例，所以图例、缩放都能用。
 
@@ -303,11 +303,13 @@ pub(crate) fn bubble(spec: &Bubble<'_>) -> String {
   TRIGGERS.forEach(function (id) {{
     var gd = document.getElementById(id);
     if (!gd || !gd.on) {{ return; }}
-    // 只有命中最底层那条热图（curveNumber 0）才出气泡：轴区、边线图、colorbar
-    // 上要么不派发 plotly_hover，要么命中曲线 1/2，都归为"离开二维图区域"。
+    // 只有命中热图色带才出气泡：轴区不派发 plotly_hover，边线图命中的是 scatter，
+    // 都归为"离开二维图区域"。色带按行各一条 trace、且排在两条边线之后（下标不是 0），
+    // 所以按 trace 类型认，不按下标认。
     gd.on("plotly_hover", function (ev) {{
       var points = (ev && ev.points) || [];
-      if (!points.length || points[0].curveNumber !== 0) {{
+      var trace = points.length ? gd.data[points[0].curveNumber] : null;
+      if (!trace || trace.type !== "heatmap") {{
         scheduleHide();
         return;
       }}
@@ -347,7 +349,7 @@ pub(crate) fn bubble(spec: &Bubble<'_>) -> String {
 /// `position:relative` 是给标题用的定位上下文（气泡/浮层各自再用两类的选择器
 /// 覆盖成 `fixed`）。
 pub(crate) const CARD_STYLE: &str = "\
-.qtool-card{position:relative;background:#ffffff;border:2.5px solid #0f172a;border-radius:12px;padding:10px;box-shadow:4px 4px 0 0 #0f172a}\
+.qtool-card{position:relative;box-sizing:border-box;background:#ffffff;border:2.5px solid #0f172a;border-radius:12px;padding:10px;box-shadow:4px 4px 0 0 #0f172a}\
 /* 可选标题：骑在上边线上（纵向中心与边线中心重合），白底盖掉被它压住的那段边线 */\
 .qtool-card-title{position:absolute;left:14px;top:-1.25px;transform:translateY(-50%);background:#ffffff;padding:0 8px;font-weight:700;font-size:16px;color:#1e293b}";
 
@@ -362,18 +364,25 @@ pub(crate) fn card_title(text: &str) -> String {
     }
 }
 
-/// 可选外框：`Some(title)` ⇒ 把整段套进漫画卡片框（`title` 非空时骑在上边线上）；
-/// `None` ⇒ 原样返回（裸图）。
+/// 卡片容器：**宽度上限的唯一载体**——挂在容器上而不是内容上，框于是必然贴着内容。
 ///
-/// 报告函数都收一个 `frame: Option<&str>` 参数，由调用方决定要不要框、框上写什么 ——
-/// 嵌进气泡/浮层的行面板传 `None`（那里已经有卡片了），独立出图时传标题。
-pub(crate) fn framize(inner: &str, title: Option<&str>) -> String {
+/// 报告都收一个 `frame: Option<&str>` 参数，由调用方决定要不要描边——嵌进气泡/浮层的行面板
+/// 传 `None`（那里已经有卡片了，只要宽度上限），独立出图时传标题。
+///
+/// 形参:
+///     inner: 卡片内容
+///     title: `Some` ⇒ 描边卡片（文字非空时骑在上边线上）；`None` ⇒ 裸容器（只有宽度上限）
+///     width: 设计宽度（px）
+///
+/// 返回值:
+///     容器片段
+pub(crate) fn card_box(inner: &str, title: Option<&str>, width: f64) -> String {
     match title {
         Some(text) => format!(
-            "<style>{CARD_STYLE}</style><div class=\"qtool-card\">{}{inner}</div>",
+            "<style>{CARD_STYLE}</style><div class=\"qtool-card\" style=\"max-width:{width}px\">{}{inner}</div>",
             card_title(text)
         ),
-        None => inner.to_string(),
+        None => format!("<div class=\"qtool-bare\" style=\"max-width:{width}px\">{inner}</div>"),
     }
 }
 

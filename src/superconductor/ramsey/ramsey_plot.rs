@@ -2,7 +2,7 @@
 //!
 //! 一次调用产出五面板图（|S21|、相位、IQ 平面、P1，第三行整宽放 P1 的幅度谱）+ 参数表 +
 //! 页脚的 HTML 片段，可直接插入汇总报表 / iframe / Jupyter。图形由 plotly.js 在浏览器端渲染，
-//! 本模块只生成 `<div>` 与 `Plotly.newPlot` 调用（[`plotly::Plot::to_inline_html`]）；宿主
+//! 本模块只生成 `<div>` 与 `Plotly.newPlot` 调用（自带 config 的 `Plotly.newPlot` 片段）；宿主
 //! 页面需自行加载 plotly.js，可用 [`PLOTLY_JS_CDN`] 一行引入。
 //!
 //! 面板内容对齐 baseline `exps/t2_analysis.py::t2_plot` 的同族版式（rabi 报告的五面板骨架）：
@@ -17,14 +17,14 @@
 
 use crate::superconductor::ramsey::ramsey::{RamseyError, RamseyFit};
 use crate::superconductor::{StateCenters, p1, p1_sigma};
-use crate::utils::bubble::framize;
 use crate::utils::heatmap::{escape_html, interactive_config};
 use crate::utils::panels::{
-    AxisOpts, Cell, DATA_COLOR, FIT_COLOR, GRID_2X3, ONE_COLOR, PanelSpec, ResidualAxis, Titles,
-    ZERO_COLOR, axis_refs, color_samples, curve, dense_grid, layout, markers, pad, projection_axis,
-    projection_refs, ref_point, report_div, residual_axis_range, residual_markers, series,
-    value_bounds,
+    AxisOpts, CARD_WIDTH, Card, Cell, DATA_COLOR, FIT_COLOR, GRID_2X3, ONE_COLOR, PanelSpec,
+    ResidualAxis, Titles, ZERO_COLOR, axis_refs, block, card, color_samples, curve, dense_grid,
+    layout, markers, pad, projection_axis, projection_refs, ref_point, residual_axis_range,
+    residual_markers, series, value_bounds,
 };
+use crate::utils::data::{Column, Datum, Payload, Table, fit_row};
 use crate::utils::params::{ParamRow, params_table};
 use crate::utils::spectrum;
 use lmfit::Complex64;
@@ -72,14 +72,12 @@ impl Panel {
     }
 }
 
-/// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）；尺寸相关的两条
-/// 规则由 [`crate::utils::panels::size_style`] 单独生成。
+/// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）。
 const STYLE: &str = r#"<style>
 .qtool-ramsey{font-family:system-ui,'Segoe UI',sans-serif;color:#1f2328}
-/* 高度跟着宽度走（比例即网格的设计宽高） */
-.qtool-ramsey .qtool-plot{width:100%;max-height:85vh}
+/* 图块按设计比例渲染（比例由 block 的内联 aspect-ratio 给出），不设 max-height：
+   压扁之后行距随之缩小、字号却不变，上一行的 x 轴标题会与下一行的面板标题叠在一起 */
 .qtool-ramsey .qtool-error{margin-top:6px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:13px}
-.qtool-ramsey .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
 </style>"#;
 
 /// 把一条 Ramsey 延时扫描渲染成自包含的 HTML div。
@@ -99,8 +97,8 @@ const STYLE: &str = r#"<style>
 ///     frame: 可选外框：`Some(title)` 套上卡片框（`title` 非空时骑在上边线上），`None` 裸图
 ///
 /// 返回值:
-///     自包含的 `<div class="qtool-ramsey">` 片段（图 + 参数表 + 页脚）；宿主页面需自行加载
-///     plotly.js（见 [`PLOTLY_JS_CDN`]）
+///     自包含的 `<div class="qtool-ramsey">` 片段（图 + 参数表 + 页脚），并内蕴一份原始数据供
+///     下载（见 [`crate::utils::data`]）；宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
 ///
 /// [`ramsey_fit`]: crate::superconductor::ramsey::ramsey_fit
 pub fn ramsey_plot_div(
@@ -114,19 +112,130 @@ pub fn ramsey_plot_div(
 ) -> String {
     let overlay = overlay(&fit, taus);
     let plot = fit_plot(taus, iq, states, sigma, &fit, &overlay);
-    let plot_div_id = format!("{div_id}-plot");
-    let plot_html = plot.to_inline_html(Some(plot_div_id.as_str()));
-
-    let html = report_div(
-        "qtool-ramsey",
-        STYLE,
-        div_id,
-        &GRID_2X3,
-        &plot_html,
+    let plot_html = crate::utils::data::plot_script(&plot, div_id);
+    let report_data = payload(taus, iq, states, sigma, &fit, div_id);
+    let body = format!(
+        "{}{}",
+        block(div_id, "qtool-plot", (CARD_WIDTH, GRID_2X3.height), &plot_html),
         &overlay.table_html(),
     );
-    framize(&html, frame)
+    card(Card {
+        class: "qtool-ramsey",
+        style: STYLE,
+        div_id,
+        body,
+        payload: Some(&report_data),
+        frame,
+    })
 }
+
+/// 报告的载荷：喂进拟合的输入（延时轴、复 IQ、IQ 域 σ）+ 投影后的 P1 / P1σ + 模型在数据点上的
+/// 值 + 拟合参数 + 标定中心。
+///
+/// P1 与图上同源：有拟合时取 `fit.p1`（实际拟合的那条），否则现投影一次（[`p1`]）；模型是拟合
+/// 曲线在数据点上的取值，无拟合时整列按缺失落。供显示用的量（幅度、相位、残差、密集曲线、频谱）
+/// 一概不入表——都能从这里的列推出来。
+///
+/// 形参:
+///     taus: 延时轴 (n,)，s
+///     iq: 平均复数 IQ (n,)
+///     states: 各态标定中心
+///     sigma: IQ 域逐点不确定度；长度与 `iq` 不一致时按缺失处理（与图上的口径一致）
+///     fit: 拟合结果
+///     div_id: 报告名（内蕴数据的 `name`，也是下载文件基名）
+///
+/// 返回值:
+///     载荷（`data` + `fits`，给了 `states` 再带一张 `states`）
+fn payload(
+    taus: &[f64],
+    iq: &[Complex64],
+    states: Option<&StateCenters>,
+    sigma: Option<&[f64]>,
+    fit: &Result<&RamseyFit, &RamseyError>,
+    div_id: &str,
+) -> Payload {
+    let prob = match fit {
+        Ok(result) => result.p1.clone(),
+        Err(_) => p1(iq, states),
+    };
+    let iq_sigma = match sigma {
+        Some(values) => match values.len() == iq.len() {
+            true => Some(values),
+            false => None,
+        },
+        None => None,
+    };
+    let prob_sigma = match iq_sigma {
+        Some(values) => Some(p1_sigma(iq, states, values)),
+        None => None,
+    };
+    let model = match fit {
+        Ok(result) => Some(result.result.model.at(taus)),
+        Err(_) => None,
+    };
+    let mut data = Table::new(
+        "data",
+        vec![
+            Column::real("tau", "s"),
+            Column::complex("iq", "a.u."),
+            Column::real("iq_sigma", "a.u."),
+            Column::real("p1", "1"),
+            Column::real("p1_sigma", "1"),
+            Column::real("model", "1"),
+        ],
+    );
+    for index in 0..taus.len() {
+        data.push(&[
+            Datum::Real(taus[index]),
+            Datum::Complex(iq[index].re, iq[index].im),
+            match iq_sigma {
+                Some(values) => Datum::Real(values[index]),
+                None => Datum::Missing,
+            },
+            Datum::Real(prob[index]),
+            match &prob_sigma {
+                Some(values) => Datum::Real(values[index]),
+                None => Datum::Missing,
+            },
+            match &model {
+                Some(values) => Datum::Real(values[index]),
+                None => Datum::Missing,
+            },
+        ]);
+    }
+    let mut report = Payload::new(div_id);
+    report.table(data);
+    match fit {
+        Ok(result) => {
+            // 逐拟合一行：参数各占一列、标准误用 `<参数>_stderr` 列（单位按参数名查表）
+            let (columns, row) = fit_row(&result.result.params, &PARAM_UNITS, &[]);
+            let mut fits = Table::new("fits", columns);
+            fits.push(&row);
+            report.table(fits);
+        }
+        Err(_) => {}
+    }
+    match states {
+        Some(centers) => {
+            let mut table = Table::new("states", vec![Column::complex("center", "a.u.")]);
+            for center in centers.as_slice() {
+                table.push(&[Datum::Complex(center.re, center.im)]);
+            }
+            report.table(table);
+        }
+        None => {}
+    }
+    report
+}
+
+/// 模型各参数的单位（无量纲写 `1`）。
+const PARAM_UNITS: [(&str, &str); 5] = [
+    ("offset", "1"),
+    ("amplitude", "1"),
+    ("frequency", "Hz"),
+    ("phase", "rad"),
+    ("decay", "s"),
+];
 
 /// 拟合结果的叠加层：`Ok` 时给出模型曲线、T2\* 与参数表，`Err` 时把错误交给页面。
 ///

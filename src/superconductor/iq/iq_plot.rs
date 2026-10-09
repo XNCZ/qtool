@@ -12,9 +12,9 @@
 //! 深浅是叠出来的：99% 先画、95% 次之、68% 最后，三层同色半透明叠加，内圈自然更深。
 
 use crate::superconductor::iq::iq::{IqStats, LEVELS, StateStats, pair_projection};
-use crate::utils::panels::GRID_2X3;
+use crate::utils::data::{Column, Datum, Payload, Table};
+use crate::utils::panels::{CARD_WIDTH, Card, block, card};
 use crate::superconductor::iq::{IqError, iq_stats, scatter};
-use crate::utils::bubble::framize;
 use crate::utils::heatmap::{axis_style, escape_html, figure_font, interactive_config, json_array};
 use crate::utils::params::{ParamRow, params_table};
 use lmfit::Complex64;
@@ -81,13 +81,6 @@ const PLOT_HEIGHT: f64 = 492.0;
 
 /// 尺寸相关的 CSS：卡片宽度取 [`GRID_2X3`] 的设计宽度（与 rabi / s21 / qspec 的报告并排时
 /// 边界对齐），并定下画布高宽比。CSS 读不到 Rust 常量，所以这里插值生成。
-fn size_style() -> String {
-    let width = GRID_2X3.width;
-    format!(
-        "<style>.qtool-iq{{max-width:{width}px}}         .qtool-iq .qtool-plot{{width:100%;aspect-ratio:{width}/{PLOT_HEIGHT}}}</style>"
-    )
-}
-
 /// 各态的主色（|0> 蓝、|1> 红沿用 baseline IQ 云图的既有配色，其余依次补色）。
 ///
 /// 存 RGB 分量而不是色名：`rgb(…)` 字符串能直接喂给 plotly 的任意颜色位。
@@ -124,7 +117,6 @@ const STYLE: &str = r#"<style>
 .qtool-iq .qtool-iq-bar select{font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:6px;margin-left:2px;padding:0 2px;cursor:pointer;appearance:none;-webkit-appearance:none;-moz-appearance:none}
 .qtool-iq .qtool-iq-bar select:hover,.qtool-iq .qtool-iq-bar select:focus{border-color:#cbd5e1;background:#ffffff}
 .qtool-iq .qtool-error{margin-top:6px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:13px}
-.qtool-iq .qtool-footer{margin-top:6px;text-align:right;font-size:11px;color:#9ca3af}
 </style>"#;
 
 /// 把一批各态单发 IQ 云渲染成自包含的 HTML div。
@@ -135,20 +127,120 @@ const STYLE: &str = r#"<style>
 ///     frame: 可选外框：`Some(title)` 套上卡片框（`title` 非空时骑在上边线上），`None` 裸图
 ///
 /// 返回值:
-///     自包含的 `<div class="qtool-iq">` 片段（图 + 参数表 + 页脚）；统计失败时只给错误条。
+///     自包含的 `<div class="qtool-iq">` 片段（图 + 参数表 + 页脚），并内蕴一份原始数据供下载
+///     （见 [`crate::utils::data`]）；统计失败时只给错误条（没有量可内蕴，载荷跟着缺）。
 ///     宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
 pub fn iq_plot_div(iqs: &[Vec<Complex64>], div_id: &str, frame: Option<&str>) -> String {
-    let html = match iq_stats(iqs) {
+    // 统计失败时没有量可内蕴，载荷跟着缺（卡片照出，只给错误条）
+    let mut report_data: Option<Payload> = None;
+    let body = match iq_stats(iqs) {
         Ok(stats) => {
             let series = pair_series(iqs, &stats);
             let plot = iq_plot(iqs, &stats);
-            let plot_div_id = format!("{div_id}-plot");
-            let plot_html = plot.to_inline_html(Some(plot_div_id.as_str()));
-            report_div(div_id, &plot_html, &series, &params_body(&stats), iqs.len())
+            let plot_html = crate::utils::data::plot_script(&plot, div_id);
+            report_data = Some(payload(iqs, &stats, div_id));
+            format!(
+                "{}{}{}{}{}",
+                pair_bar(div_id, &series),
+                block(div_id, "qtool-plot", (CARD_WIDTH, PLOT_HEIGHT), &plot_html),
+                pair_script(div_id, &series),
+                legend_script(div_id, iqs.len()),
+                params_body(&stats),
+            )
         }
-        Err(error) => report_div(div_id, "", &[], &error_body(&error), iqs.len()),
+        Err(error) => error_body(&error),
     };
-    framize(&html, frame)
+    card(Card {
+        class: "qtool-iq",
+        style: STYLE,
+        div_id,
+        body,
+        payload: report_data.as_ref(),
+        frame,
+    })
+}
+
+/// 报告载荷：每态的单发 IQ **全量**各占一张 `row_<i>` 子表（i 即态编号）；中心、逐级密度
+/// 区域的面积与半径、每对态的判别统计各一张汇总表。
+///
+/// 这张报告没有拟合：中心、面积、阈值的算法都在 [`crate::superconductor::iq`]，载荷给的是
+/// 它算出来的量与喂进去的单发点本身。
+///
+/// 形参:
+///     iqs: 各态的单发 IQ 云（`iqs[i]` 是第 i 个态，索引即态编号）
+///     stats: 统计结果
+///     div_id: 报告名（内蕴数据的 `name`，也是下载文件基名）
+///
+/// 返回值:
+///     载荷（`states`、`density`、`pairs` 在前，随后逐态一张 `row_<i>`）
+fn payload(iqs: &[Vec<Complex64>], stats: &IqStats, div_id: &str) -> Payload {
+    let mut report = Payload::new(div_id);
+    let mut states = Table::new(
+        "states",
+        vec![
+            Column::real("state", "1"),
+            Column::reference("row", "1"),
+            Column::complex("center", "a.u."),
+        ],
+    );
+    let mut density = Table::new(
+        "density",
+        vec![
+            Column::real("state", "1"),
+            Column::real("level", "1"),
+            Column::real("area", "a.u.^2"),
+            Column::real("radius", "a.u."),
+        ],
+    );
+    for (index, state) in stats.states().iter().enumerate() {
+        states.push(&[
+            Datum::Real(index as f64),
+            Datum::Real(index as f64),
+            Datum::Complex(state.center.re, state.center.im),
+        ]);
+        for (slot, level) in LEVELS.iter().enumerate() {
+            density.push(&[
+                Datum::Real(index as f64),
+                Datum::Real(*level),
+                Datum::Real(state.areas[slot]),
+                Datum::Real(state.radii[slot]),
+            ]);
+        }
+    }
+    let mut pairs = Table::new(
+        "pairs",
+        vec![
+            Column::real("p", "1"),
+            Column::real("q", "1"),
+            Column::real("separation", "a.u."),
+            Column::complex("threshold", "a.u."),
+            Column::real("error_rate", "1"),
+            Column::real("auc", "1"),
+            Column::real("snr", "1"),
+        ],
+    );
+    for pair in stats.pairs() {
+        pairs.push(&[
+            Datum::Real(pair.state_p as f64),
+            Datum::Real(pair.state_q as f64),
+            Datum::Real(pair.separation),
+            Datum::Complex(pair.threshold.re, pair.threshold.im),
+            Datum::Real(pair.error_rate),
+            Datum::Real(pair.auc),
+            Datum::Real(pair.snr),
+        ]);
+    }
+    report.table(states);
+    report.table(density);
+    report.table(pairs);
+    for (index, cloud) in iqs.iter().enumerate() {
+        let mut table = Table::new(&format!("row_{index}"), vec![Column::complex("iq", "a.u.")]);
+        for shot in cloud {
+            table.push(&[Datum::Complex(shot.re, shot.im)]);
+        }
+        report.table(table);
+    }
+    report
 }
 
 /// 图对象：左云图 + 右判别面板。
@@ -565,40 +657,6 @@ fn add_threshold_line(layout: Layout, series: &[PairSeries]) -> Layout {
 
 /// 报告外壳：根 div + 样式 + 标题条 + 图 + 缩放注册 + 脚本 + 参数表 + 页脚。
 ///
-/// 形参:
-///     div_id: 根 div 的 id
-///     plot_html: plotly 的内联图片段
-///     series: 各态对在判别面板上的数据（下拉框用它切换）
-///     body: 图之后的参数表
-///     states: 态数（图例里那几条"一次管所有态"的条目要用全部态色，见 [`legend_script`]）
-fn report_div(
-    div_id: &str,
-    plot_html: &str,
-    series: &[PairSeries],
-    body: &str,
-    states: usize,
-) -> String {
-    let mut html = String::new();
-    html.push_str(&format!(
-        "<div class=\"qtool-iq\" id=\"{}\">",
-        escape_html(div_id)
-    ));
-    html.push_str(STYLE);
-    html.push_str(&size_style());
-    html.push_str(&pair_bar(div_id, series));
-    html.push_str(&format!("<div class=\"qtool-plot\">{plot_html}</div>"));
-    html.push_str(&crate::utils::resize::register_script(div_id));
-    html.push_str(&pair_script(div_id, series));
-    html.push_str(&legend_script(div_id, states));
-    html.push_str(body);
-    html.push_str(&format!(
-        "<div class=\"qtool-footer\">Powered by qtool v{}</div>",
-        env!("CARGO_PKG_VERSION")
-    ));
-    html.push_str("</div>\n");
-    html
-}
-
 /// 图上的标题条：左边写云图的面板名，右边是"判别面板 + 选哪一对"的下拉框。
 ///
 /// 下拉框只能放在 HTML 里（plotly 的注解里放不下 `<select>`），所以判别面板的图名从图内
