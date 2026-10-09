@@ -65,8 +65,8 @@ pub fn qspec_fit_plot_div(
     div_id: &str,
     frame: Option<&str>,
 ) -> String {
-    let report_data = payload(freqs_hz, iq, states, sigma, &fit, div_id);
-    qspec_card(freqs_hz, iq, states, sigma, fit, div_id, frame, Some(&report_data))
+    let payload = payload(freqs_hz, iq, states, sigma, &fit, div_id);
+    qspec_card(freqs_hz, iq, states, sigma, fit, div_id, frame, Some(&payload))
 }
 
 /// 行面板：嵌进 qspec vs Z 的气泡/浮层里的那一份，与独立报告同一套版式，只是**不内蕴载荷**——
@@ -208,15 +208,15 @@ fn payload(
             },
         ]);
     }
-    let mut report = Payload::new(div_id);
-    report.table(data);
+    let mut payload = Payload::new(div_id);
+    payload.table(data);
     match fit {
         Ok(result) => {
             // 逐拟合一行：参数各占一列、标准误用 `<参数>_stderr` 列（单位按参数名查表）
             let (columns, row) = fit_row(&result.result.params, &PARAM_UNITS, &[]);
             let mut fits = Table::new("fits", columns);
             fits.push(&row);
-            report.table(fits);
+            payload.table(fits);
         }
         Err(_) => {}
     }
@@ -226,11 +226,11 @@ fn payload(
             for center in centers.as_slice() {
                 table.push(&[Datum::Complex(center.re, center.im)]);
             }
-            report.table(table);
+            payload.table(table);
         }
         None => {}
     }
-    report
+    payload
 }
 
 /// 模型各参数的单位（无量纲写 `1`）；qspec vs Z 报告逐行复用同一张表。

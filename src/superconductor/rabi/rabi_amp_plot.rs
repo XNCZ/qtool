@@ -120,7 +120,7 @@ pub fn rabi_amp_plot_div(
     let overlay = overlay(&fit, amps);
     let plot = fit_plot(amps, iq, states, sigma, &fit, &overlay);
     let plot_html = crate::utils::data::plot_script(&plot, div_id);
-    let report_data = payload(amps, iq, states, sigma, &fit, div_id);
+    let payload = payload(amps, iq, states, sigma, &fit, div_id);
     let body = format!(
         "{}{}",
         block(div_id, "qtool-plot", (CARD_WIDTH, GRID_2X3.height), &plot_html),
@@ -131,7 +131,7 @@ pub fn rabi_amp_plot_div(
         style: STYLE,
         div_id,
         body,
-        payload: Some(&report_data),
+        payload: Some(&payload),
         frame,
     })
 }
@@ -210,15 +210,15 @@ fn payload(
             },
         ]);
     }
-    let mut report = Payload::new(div_id);
-    report.table(data);
+    let mut payload = Payload::new(div_id);
+    payload.table(data);
     match fit {
         Ok(result) => {
             // 逐拟合一行：参数各占一列、标准误用 `<参数>_stderr` 列（单位按参数名查表）
             let (columns, row) = fit_row(&result.result.params, &PARAM_UNITS, &[]);
             let mut fits = Table::new("fits", columns);
             fits.push(&row);
-            report.table(fits);
+            payload.table(fits);
         }
         Err(_) => {}
     }
@@ -228,11 +228,11 @@ fn payload(
             for center in centers.as_slice() {
                 table.push(&[Datum::Complex(center.re, center.im)]);
             }
-            report.table(table);
+            payload.table(table);
         }
         None => {}
     }
-    report
+    payload
 }
 
 /// 模型各参数的单位（无量纲写 `1`）。

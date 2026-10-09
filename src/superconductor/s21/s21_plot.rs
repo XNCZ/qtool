@@ -62,8 +62,8 @@ pub fn s21_fit_plot_div(
     div_id: &str,
     frame: Option<&str>,
 ) -> String {
-    let report_data = payload(freqs_hz, iq, sigma, fit, div_id);
-    s21_card(freqs_hz, iq, sigma, fit, div_id, frame, Some(&report_data))
+    let payload = payload(freqs_hz, iq, sigma, fit, div_id);
+    s21_card(freqs_hz, iq, sigma, fit, div_id, frame, Some(&payload))
 }
 
 /// 行面板：嵌进 s21 vs power 的气泡/浮层里的那一份，与独立报告同一套版式，只是**不内蕴载荷**——
@@ -181,19 +181,19 @@ fn payload(
             },
         ]);
     }
-    let mut report = Payload::new(div_id);
-    report.table(data);
+    let mut payload = Payload::new(div_id);
+    payload.table(data);
     match fit {
         Ok(result) => {
             // 逐拟合一行：11 个拟合参数 + 2 个派生量，各带 `<参数>_stderr` 列
             let (columns, row) = fit_row(&result.params, &PARAM_UNITS, &[]);
             let mut fits = Table::new("fits", columns);
             fits.push(&row);
-            report.table(fits);
+            payload.table(fits);
         }
         Err(_) => {}
     }
-    report
+    payload
 }
 
 /// 拟合四面板的 Plotly 图对象（不含标题与参数表）。

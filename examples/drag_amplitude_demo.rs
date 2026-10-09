@@ -228,7 +228,6 @@ fn main() {
             &div_id,
             Some(title),
         ));
-        divs.push_str("<hr style=\"border:none;border-top:1px solid #e5e7eb;margin:24px 0\">\n");
     }
 
     // 批量入口：同一批比特共用一条轴（这里用不同种子模拟）

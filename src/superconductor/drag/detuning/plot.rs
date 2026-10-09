@@ -344,13 +344,13 @@ pub fn drag_detuning_plot_div(
         block(div_id, "qtool-plot", (CARD_WIDTH, GRID_2X2.height), &plot_html),
         &tail,
     );
-    let report_data = payload(&layers, chosen, div_id);
+    let payload = payload(&layers, chosen, div_id);
     card(Card {
         class: "qtool-dragdetune",
         style: &format!("{STYLE}{}", title_bar_style()),
         div_id,
         body,
-        payload: Some(&report_data),
+        payload: Some(&payload),
         frame,
     })
 }
@@ -368,7 +368,7 @@ pub fn drag_detuning_plot_div(
 /// 返回值:
 ///     载荷（逐阶一张 `row_<i>`，随后 `fits` 与 `params`）
 fn payload(layers: &[Layer<'_>], chosen: f64, div_id: &str) -> Payload {
-    let mut report = Payload::new(div_id);
+    let mut payload = Payload::new(div_id);
     let mut fits: Vec<(Vec<Column>, Vec<Datum>)> = Vec::new();
     // 逐阶子表攒着，等汇总表都落定再一起追加：CSV 只把第一张表当数据行，汇总表要在前
     let mut series: Vec<Table> = Vec::new();
@@ -420,17 +420,17 @@ fn payload(layers: &[Layer<'_>], chosen: f64, div_id: &str) -> Payload {
             for (_, row) in &fits {
                 table.push(row);
             }
-            report.table(table);
+            payload.table(table);
         }
         None => {}
     }
     let mut params = Table::new("params", vec![Column::real("chosen", "Hz")]);
     params.push(&[Datum::Real(chosen)]);
-    report.table(params);
+    payload.table(params);
     for table in series {
-        report.table(table);
+        payload.table(table);
     }
-    report
+    payload
 }
 
 /// 谷模型各参数的单位：失谐轴是 Hz，谷心与半宽跟着 Hz。

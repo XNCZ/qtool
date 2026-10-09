@@ -142,7 +142,6 @@ fn main() {
             &div_id,
             Some(title),
         ));
-        divs.push_str("<hr style=\"border:none;border-top:1px solid #e5e7eb;margin:24px 0\">\n");
     }
 
     // 批量入口：同一条比特的多档参数扫描（这里用不同种子模拟）——结果按输入顺序返回。

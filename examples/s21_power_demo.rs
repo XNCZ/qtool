@@ -140,7 +140,6 @@ fn main() {
             &div_id,
             Some(title.as_str()),
         ));
-        divs.push_str("<hr style=\"border:none;border-top:1px solid #e5e7eb;margin:24px 0\">\n");
     }
 
     let html = format!(

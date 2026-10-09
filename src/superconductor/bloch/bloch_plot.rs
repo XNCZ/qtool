@@ -162,13 +162,13 @@ pub fn bloch_plot_div(
         highlight_script(div_id),
     );
 
-    let report_data = payload(vector, div_id);
+    let payload = payload(vector, div_id);
     card(Card {
         class: "qtool-bloch",
         style: STYLE,
         div_id,
         body,
-        payload: Some(&report_data),
+        payload: Some(&payload),
         frame,
     })
 }
@@ -202,9 +202,9 @@ fn payload(vector: &BlochVector, div_id: &str) -> Payload {
             Datum::Real(vector.z[point]),
         ]);
     }
-    let mut report = Payload::new(div_id);
-    report.table(data);
-    report
+    let mut payload = Payload::new(div_id);
+    payload.table(data);
+    payload
 }
 
 /// 三个分量按 X/Y/Z 排好，供面板按下标取用。

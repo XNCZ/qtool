@@ -12,7 +12,8 @@
 //! 不给则各行共用公共轴（[`qspec_z_plot_div`] 的第一个参数）。
 //!
 //! 通量调谐（f01 vs Z）的拟合在 [`super::flux`]；把它的结果交给 [`qspec_z_plot_div`] 的最后
-//! 一个形参，报告最下方会多一张面板：实测峰位（点）叠拟合曲线，下面是参数表。
+//! 一个形参：拟合曲线叠在参数线图上，选中 `fq` 时显示（叠在实测峰位上）、切到别的参数时
+//! 让位；拟合参数表常显在同一个面板里——两者都不另占面板。
 
 use crate::superconductor::qspec::flux::{FluxError, FluxFit};
 use crate::superconductor::qspec::qspec::{QspecError, QspecFit};
@@ -24,7 +25,7 @@ use crate::utils::params::{ParamRow, params_table};
 use crate::superconductor::{StateCenters, p1};
 use crate::utils::bubble::{Bubble, bubble};
 use crate::utils::heatmap::{
-    Grid2d, Palette, axis_style, figure_font, heatmap, interactive_config, json_array,
+    Grid2d, Palette, View, axis_style, figure_font, heatmap, interactive_config, json_array,
 };
 use lmfit::Complex64;
 use plotly::Trace;
@@ -39,6 +40,10 @@ const SCALE: f64 = 0.62;
 /// 压到"图名下面一点"即可。自带工具栏（modebar）不占这里——它在 CSS 里被挪到图名行右端。
 const LINE_PLOT_TOP: usize = 10;
 
+/// 通量拟合曲线在 plotly 图里的 trace 名：脚本按**名字**找它的下标（不硬编码下标，
+/// 以后往这张图里再插 trace 也不会错位，参照 `bubble.rs` 里按下标认 trace 踩过的坑）。
+const FLUX_TRACE_NAME: &str = "flux-fit";
+
 /// 每个 div 自带的内联样式（类名统一 `qtool-` 前缀，避免污染宿主页面）。
 const STYLE: &str = r#"<style>
 /* 宽度上限由卡片容器给（与其余报告同一个设计宽度），图仍由 ResizeObserver 跟尺寸重排 */
@@ -50,8 +55,6 @@ const STYLE: &str = r#"<style>
 .qtool-qspec-z .qtool-qspec-z-lines>.qtool-line{flex:1 1 420px;min-width:0}
 /* 线图比二维图扁：容器高度 = plotly 上边距 + 纸面 + 下边距 */
 .qtool-qspec-z .qtool-line-plot{max-height:60vh}
-/* 通量调谐面板：basis 100% 让它独占一行，摆在参数线图下方 */
-.qtool-qspec-z .qtool-qspec-z-lines>.qtool-flux{flex:1 1 100%}
 /* plotly 自带工具栏固定贴在容器右上角（top:2px），上边距压小后就会压在图上 ——
    挪到图名行右端（图名行高约 21px + 6px 外边距，工具栏高 19px，居中即 -26px） */
 .qtool-qspec-z .js-plotly-plot .modebar{top:-26px}
@@ -129,12 +132,12 @@ fn align_rows(rows: &[(&[f64], Vec<f64>)]) -> (Vec<f64>, Vec<Vec<f64>>) {
 ///             同一套中心，否则热图上的曲线不是被拟合的那条）
 ///     div_id: 外层 div 的 HTML id（须是合法 id）
 ///     frame: 可选外框：`Some(title)` 套上卡片框，`None` 裸图
-///     flux: 通量调谐（f01 vs Z）的拟合结果——`Some(Ok(fit))` 时最下方多一张面板
-///           （实测峰位点 + 拟合曲线 + 参数表），`Some(Err(error))` 时只画点并在表下说明，
-///           `None` 表示这一格不做通量拟合；峰位取各行 `fit` 的 `fq`
+///     flux: 通量调谐（f01 vs Z）的拟合结果——`Some(Ok(fit))` 时参数线图上多一条拟合曲线
+///           （选中 `fq` 时显示，叠在实测峰位点上）与一张常显的参数表，`Some(Err(error))` 时
+///           只有表并在表里说明失败原因，`None` 表示这一格不做通量拟合；峰位取各行 `fit` 的 `fq`
 ///
 /// 返回值:
-///     自包含的 `<div class="qtool-qspec-z">` 片段（热图 + 参数线图 + 通量面板 + 跟随光标的
+///     自包含的 `<div class="qtool-qspec-z">` 片段（热图 + 参数线图 + 跟随光标的
 ///     气泡 + 可钉住的浮层），并内蕴一份原始数据供下载（见 [`crate::utils::data`]）；
 ///     宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
 pub fn qspec_z_plot_div(
@@ -168,14 +171,18 @@ pub fn qspec_z_plot_div(
         &Grid2d {
             x: &union,
             y: &zs,
-            z: &p1_matrix,
-            z_err: None,
+            // 只有一个视图：图名行就是 "P1 vs Z"，不出下拉框
+            views: &[View {
+                name: "P1",
+                value_title: "P1",
+                z: &p1_matrix,
+                z_err: None,
+                // 蓝（低）→ 红（高）：|0> 端偏蓝、|1> 端偏红，与 IQ 面板的两态配色同语义
+                palette: Palette::RdBu,
+            }],
             x_title: "freq (Hz)",
             y_title: "Z (V)",
-            value_title: "P1",
-            caption: "P1 vs Z",
-            // 蓝（低）→ 红（高）：|0> 端偏蓝、|1> 端偏红，与 IQ 面板的两态配色同语义
-            palette: Palette::RdBu,
+            value_axis: "Z",
         },
         &format!("{div_id}-map"),
     );
@@ -184,6 +191,7 @@ pub fn qspec_z_plot_div(
         &param_series(lines),
         &format!("{div_id}-param"),
         FIT_COLOR,
+        &flux,
     );
 
     // 每个 Z 的面板（[`qspec_fit_plot_div`] 的四面板图 + 参数表，含自身样式）嵌在
@@ -209,34 +217,19 @@ pub fn qspec_z_plot_div(
         scale: SCALE,
     });
 
-    // 通量调谐面板（可选）：横坐标与热图共用 Z，实测峰位取各行拟合出的 `fq`
-    let flux_html = match flux {
-        Some(result) => {
-            let peaks: Vec<f64> = lines
-                .iter()
-                .map(|line| match &line.fit {
-                    Ok(fit) => fit.result.model.fq,
-                    Err(_not_fitted) => f64::NAN,
-                })
-                .collect();
-            flux_panel(&format!("{div_id}-flux"), &zs, &peaks, &result)
-        }
-        None => String::new(),
-    };
-
-    // 图组（热图 + 下方线图 + 通量面板）作为一个整体套框：`frame` 由调用方给
+    // 图组（热图 + 下方线图；通量拟合叠在参数线图里）作为一个整体套框：`frame` 由调用方给
     let style = format!("{STYLE}{}", crate::utils::heatmap::title_bar_style());
     let body = format!(
         "<div class=\"qtool-qspec-z-maps\">{map}\
-         <div class=\"qtool-qspec-z-lines\">{param_plot}{flux_html}</div></div>{bubble_html}{templates}"
+         <div class=\"qtool-qspec-z-lines\">{param_plot}</div></div>{bubble_html}{templates}"
     );
-    let report_data = payload(freqs_hz, lines, states, &flux, div_id);
+    let payload = payload(freqs_hz, lines, states, &flux, div_id);
     card(Card {
         class: "qtool-qspec-z",
         style: style.as_str(),
         div_id,
         body,
-        payload: Some(&report_data),
+        payload: Some(&payload),
         frame,
     })
 }
@@ -264,7 +257,7 @@ fn payload(
     flux: &Option<Result<&FluxFit, &FluxError>>,
     div_id: &str,
 ) -> Payload {
-    let mut report = Payload::new(div_id);
+    let mut payload = Payload::new(div_id);
     let mut fits: Vec<(Vec<Column>, Vec<Datum>)> = Vec::new();
     let mut series: Vec<Table> = Vec::new();
     for (index, line) in lines.iter().enumerate() {
@@ -321,7 +314,7 @@ fn payload(
             for (_, row) in &fits {
                 table.push(row);
             }
-            report.table(table);
+            payload.table(table);
         }
         None => {}
     }
@@ -330,7 +323,7 @@ fn payload(
             let (columns, row) = fit_row(&fit.result.params, &FLUX_UNITS, &[]);
             let mut table = Table::new("flux", columns);
             table.push(&row);
-            report.table(table);
+            payload.table(table);
         }
         Some(Err(_)) => {}
         None => {}
@@ -341,14 +334,14 @@ fn payload(
             for center in centers.as_slice() {
                 table.push(&[Datum::Complex(center.re, center.im)]);
             }
-            report.table(table);
+            payload.table(table);
         }
         None => {}
     }
     for table in series {
-        report.table(table);
+        payload.table(table);
     }
-    report
+    payload
 }
 
 /// 通量调谐模型各参数的单位（甜点频率与充电能是 Hz，偏置是 V，不对称度无量纲）。
@@ -368,25 +361,29 @@ struct ParamSeries {
     label: String,
     value: Vec<f64>,
     stderr: Vec<f64>,
+    /// 这一项是否承载通量叠加曲线：只有 `fq` 是（参数表常显，与它无关）。
+    overlay: bool,
 }
 
-/// 可画的四个洛伦兹参数：名字、显示名、以及从模型取出该参数的取值器。
+/// 可画的四个洛伦兹参数：名字、显示名、从模型取出该参数的取值器、以及该项是否承载通量叠加。
 ///
 /// 用取值器而不是按名字去匹配字符串：四个字段的对应关系只写一遍，加参数时编译器会提醒。
-const EXTRACTORS: [(&str, &str, fn(&crate::superconductor::qspec::Lorentz) -> f64); 4] = [
-    ("fq", "fq (Hz)", |model| model.fq),
-    ("fwhm", "fwhm (Hz)", |model| model.fwhm),
-    ("amp", "amp", |model| model.amp),
-    ("offset", "offset", |model| model.offset),
+/// 末列同理——"通量曲线叠在哪一项上"也只写在这里，脚本按它决定曲线的显隐。
+const EXTRACTORS: [(&str, &str, fn(&crate::superconductor::qspec::Lorentz) -> f64, bool); 4] = [
+    ("fq", "fq (Hz)", |model| model.fq, true),
+    ("fwhm", "fwhm (Hz)", |model| model.fwhm, false),
+    ("amp", "amp", |model| model.amp, false),
+    ("offset", "offset", |model| model.offset, false),
 ];
 
 /// 逐 Z 收集四个参数的拟合值与标准误。
 fn param_series(lines: &[QspecZLine<'_>]) -> Vec<ParamSeries> {
     EXTRACTORS
         .iter()
-        .map(|(name, label, extract)| ParamSeries {
+        .map(|(name, label, extract, overlay)| ParamSeries {
             name,
             label: label.to_string(),
+            overlay: *overlay,
             value: lines
                 .iter()
                 .map(|line| match &line.fit {
@@ -411,13 +408,42 @@ fn param_series(lines: &[QspecZLine<'_>]) -> Vec<ParamSeries> {
         .collect()
 }
 
-/// "参数 vs Z" 线图：value + 拟合 stderr（error bar）+ 上方的参数下拉框。
+/// "参数 vs Z" 线图：value + 拟合 stderr（error bar）+ 上方的参数下拉框；通量拟合曲线叠在
+/// 承载项上（在 [`EXTRACTORS`] 里声明）、由下拉框决定显隐，参数表常显在面板下方。
 ///
 /// 四条曲线一次全塞进页面，切下拉框只做 `Plotly.restyle`/`relayout`，不再回 Rust。
-fn param_line_plot(zs: &[f64], series: &[ParamSeries], div_id: &str, color: &'static str) -> String {
+fn param_line_plot(
+    zs: &[f64],
+    series: &[ParamSeries],
+    div_id: &str,
+    color: &'static str,
+    flux: &Option<Result<&FluxFit, &FluxError>>,
+) -> String {
     let first = match series.first() {
         Some(item) => item,
         None => return String::new(),
+    };
+    // 拟合曲线：铺在与偏置轴同范围的密集网格上（网格退化时退回数据本身）。只认
+    // `Some(Ok(..))`——`Err`/`None` 时图上没有第二条 trace，脚本按名字也就找不到它。
+    let curve = match flux {
+        Some(Ok(fit)) => {
+            let grid = match dense_grid(zs) {
+                Some(grid) => grid,
+                None => zs.to_vec(),
+            };
+            let values = fit.result.model.at(&grid);
+            Some((grid, values))
+        }
+        Some(Err(_error)) => None,
+        None => None,
+    };
+    // 参数表：常显，不随下拉框切换。`Err` 时表里写失败原因；`None` 时根本没有这张表
+    let table = match flux {
+        Some(result) => match result {
+            Ok(fit) => params_table(&flux_rows(fit), None),
+            Err(error) => params_table(&[], Some(&format!("not fitted: {error}"))),
+        },
+        None => String::new(),
     };
     let plot_html = line_plot_html(
         div_id,
@@ -426,6 +452,7 @@ fn param_line_plot(zs: &[f64], series: &[ParamSeries], div_id: &str, color: &'st
         Some(&first.stderr),
         &first.label,
         color,
+        curve.as_ref(),
     );
     let options: Vec<String> = series
         .iter()
@@ -440,11 +467,12 @@ fn param_line_plot(zs: &[f64], series: &[ParamSeries], div_id: &str, color: &'st
         .iter()
         .map(|item| {
             format!(
-                "\"{}\":{{\"label\":\"{}\",\"value\":{},\"err\":{}}}",
+                "\"{}\":{{\"label\":\"{}\",\"value\":{},\"err\":{},\"extra\":{}}}",
                 item.name,
                 item.label,
                 json_array(&item.value),
-                json_array(&item.stderr)
+                json_array(&item.stderr),
+                item.overlay && curve.is_some(),
             )
         })
         .collect();
@@ -465,22 +493,31 @@ fn param_line_plot(zs: &[f64], series: &[ParamSeries], div_id: &str, color: &'st
     ruler.font = getComputedStyle(select).font;
     select.style.width = Math.ceil(ruler.measureText(picked.text).width + 12) + "px";
   }};
-  fitWidth();
+  // 选中项的取值 + 它声明的叠加曲线一起落到图上；参数表常显，不在这里切
+  var apply = function (item) {{
+    Plotly.restyle(gd, {{ "y": [item.value], "error_y.array": [item.err], "error_y.visible": [true] }}, [0]);
+    Plotly.relayout(gd, {{ "yaxis.title.text": item.label }});
+    var index = gd.data.findIndex(function (trace) {{ return trace.name === "{curve_name}"; }});
+    if (index >= 0) {{ Plotly.restyle(gd, {{ "visible": [item.extra] }}, [index]); }}
+    fitWidth();
+  }};
   select.onchange = function () {{
     var item = SERIES[select.value];
     if (!item) {{ return; }}
-    Plotly.restyle(gd, {{ "y": [item.value], "error_y.array": [item.err], "error_y.visible": [true] }}, [0]);
-    Plotly.relayout(gd, {{ "yaxis.title.text": item.label }});
-    fitWidth();
+    apply(item);
   }};
+  // 加载时也走 apply：初始状态与切换后的状态由同一段代码决定，不给"首次"开特例
+  apply(SERIES[select.value]);
 }})();
 </script>"#,
-        data.join(",")
+        data.join(","),
+        curve_name = FLUX_TRACE_NAME
     );
-    line_frame(div_id, &title_bar, &plot_html, &script)
+    line_frame(div_id, &title_bar, &plot_html, &script, &table)
 }
 
-/// 单条曲线的 plotly 图：折线 + 误差棒，x 轴是线性的 Z 偏置。
+/// 单条曲线的 plotly 图：折线 + 误差棒，x 轴是线性的 Z 偏置；通量拟合曲线作为**第二条**
+/// trace 叠在同一张图上（`None` 时没有这条 trace）。
 ///
 /// 拟合失败或缺 stderr 的档在数据里是 NaN（plotly 视为断点，曲线断开而不是折回去）。
 fn line_plot_html(
@@ -490,6 +527,7 @@ fn line_plot_html(
     errors: Option<&[f64]>,
     y_title: &str,
     color: &'static str,
+    curve: Option<&(Vec<f64>, Vec<f64>)>,
 ) -> String {
     let mut scatter = Scatter::new(zs.to_vec(), values.to_vec())
         .mode(Mode::LinesMarkers)
@@ -514,6 +552,20 @@ fn line_plot_html(
     let mut plot = Plot::new();
     let trace: Box<dyn Trace> = scatter;
     plot.add_trace(trace);
+    // 通量拟合曲线：带 name，脚本按名字找它的下标来切显隐
+    match curve {
+        Some((grid, values)) => {
+            let fitted: Box<dyn Trace> = Scatter::new(grid.clone(), values.clone())
+                .mode(Mode::Lines)
+                .line(Line::new().color(DATA_COLOR).width(1.5))
+                .show_legend(false)
+                .name(FLUX_TRACE_NAME)
+                .x_axis("x")
+                .y_axis("y");
+            plot.add_trace(fitted);
+        }
+        None => {}
+    }
     let layout = Layout::new()
         .font(figure_font())
         // 图名在 HTML 图名行里、图内也没有顶部轴，plotly 默认的 100px 上边距全是空白 ——
@@ -526,61 +578,26 @@ fn line_plot_html(
     crate::utils::data::plot_script(&plot, div_id)
 }
 
-/// 线图面板的外壳：图名行（可含下拉框）+ plot div + 缩放注册 + 附加脚本。
-fn line_frame(name: &str, title_bar: &str, plot_html: &str, script: &str) -> String {
+/// 线图面板的外壳：图名行（可含下拉框）+ plot div + 缩放注册 + 附加脚本 + 附加内容。
+///
+/// 形参:
+///     name: 面板名（plot div 是 `{name}-plot`）
+///     title_bar: 图名行的内容（可含下拉框）
+///     plot_html: plotly 初始化片段
+///     script: 图之后的附加脚本（要等 plot div 建好才拿得到 gd）
+///     tail: 脚本之后的附加内容（通量参数表；没有表时传空串）
+fn line_frame(name: &str, title_bar: &str, plot_html: &str, script: &str, tail: &str) -> String {
     format!(
         "<div class=\"qtool-line\" id=\"{name}\">\
          <div class=\"qtool-line-title\">{title_bar}</div>\
-         {}{script}</div>\n",
+         {}{script}{tail}</div>\n",
         block(name, "qtool-line-plot", (18.0, 5.0), plot_html)
     )
 }
 
 // =========================================================================
-// 通量调谐面板
+// 通量调谐参数表
 // =========================================================================
-
-/// 通量调谐面板：实测峰位（点）叠拟合曲线，下面一张参数表。
-///
-/// 形参:
-///     div_id: 面板的 HTML id 前缀（plot div 是 `{div_id}-plot`）
-///     zs: 逐行的 Z 偏置 (n,)，V
-///     peaks: 逐行的峰位 (n,)，Hz（该行没有拟合结果时给 NaN，plotly 按断点跳过）
-///     flux: 通量调谐拟合结果；`Err` 时只画点，并在表下说明失败原因
-///
-/// 返回值:
-///     面板片段（沿用 `qtool-line` 外壳，`qtool-flux` 让它独占一行）
-fn flux_panel(
-    div_id: &str,
-    zs: &[f64],
-    peaks: &[f64],
-    flux: &Result<&FluxFit, &FluxError>,
-) -> String {
-    let (plot_html, table) = match flux {
-        Ok(fit) => {
-            // 拟合曲线铺在与偏置轴同范围的密集网格上（网格退化时退回数据本身）
-            let grid = match dense_grid(zs) {
-                Some(grid) => grid,
-                None => zs.to_vec(),
-            };
-            let curve = fit.result.model.at(&grid);
-            (
-                flux_plot_html(div_id, zs, peaks, &grid, &curve),
-                params_table(&flux_rows(fit), None),
-            )
-        }
-        Err(error) => (
-            flux_plot_html(div_id, zs, peaks, &[], &[]),
-            params_table(&[], Some(&format!("not fitted: {error}"))),
-        ),
-    };
-    format!(
-        "<div class=\"qtool-line qtool-flux\" id=\"{div_id}\">\
-         <div class=\"qtool-line-title\">通量调谐 f01 vs Z</div>\
-         {}{table}</div>\n",
-        block(div_id, "qtool-line-plot", (18.0, 5.0), &plot_html)
-    )
-}
 
 /// 通量调谐参数表的各行：三个拟合参数带标准误，两个结构常数原样带上（没有标准误）。
 ///
@@ -613,52 +630,4 @@ fn flux_rows(fit: &FluxFit) -> Vec<ParamRow<'static>> {
             },
         })
         .collect()
-}
-
-/// 通量调谐面板的图：实测峰位（点）与拟合曲线（线）。
-///
-/// 形参:
-///     div_id: 图的 HTML id 前缀（plot div 是 `{div_id}-plot`）
-///     zs: 实测偏置 (n,)，V
-///     peaks: 实测峰位 (n,)，Hz
-///     curve_zs: 拟合曲线的偏置网格 (m,)，V；空表示没有曲线可画
-///     curve: 拟合曲线在 `curve_zs` 上的取值 (m,)，Hz
-///
-/// 返回值:
-///     自包含的 plotly 图片段
-fn flux_plot_html(
-    div_id: &str,
-    zs: &[f64],
-    peaks: &[f64],
-    curve_zs: &[f64],
-    curve: &[f64],
-) -> String {
-    let points: Box<dyn Trace> = Scatter::new(zs.to_vec(), peaks.to_vec())
-        .mode(Mode::Markers)
-        .marker(Marker::new().color(DATA_COLOR).size(6))
-        .show_legend(false)
-        .x_axis("x")
-        .y_axis("y");
-    let mut plot = Plot::new();
-    plot.add_trace(points);
-    match curve.is_empty() {
-        true => {}
-        false => {
-            let fitted: Box<dyn Trace> = Scatter::new(curve_zs.to_vec(), curve.to_vec())
-                .mode(Mode::Lines)
-                .line(Line::new().color(FIT_COLOR).width(1.5))
-                .show_legend(false)
-                .x_axis("x")
-                .y_axis("y");
-            plot.add_trace(fitted);
-        }
-    }
-    let layout = Layout::new()
-        .font(figure_font())
-        .margin(Margin::new().top(LINE_PLOT_TOP))
-        .x_axis(axis_style(Axis::new().title("Z (V)")))
-        .y_axis(axis_style(Axis::new().title("f01 (Hz)")));
-    plot.set_layout(layout);
-    plot.set_configuration(interactive_config());
-    crate::utils::data::plot_script(&plot, div_id)
 }

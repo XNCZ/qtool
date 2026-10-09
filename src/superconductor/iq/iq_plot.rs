@@ -132,13 +132,13 @@ const STYLE: &str = r#"<style>
 ///     宿主页面需自行加载 plotly.js（见 [`PLOTLY_JS_CDN`]）
 pub fn iq_plot_div(iqs: &[Vec<Complex64>], div_id: &str, frame: Option<&str>) -> String {
     // 统计失败时没有量可内蕴，载荷跟着缺（卡片照出，只给错误条）
-    let mut report_data: Option<Payload> = None;
+    let mut data: Option<Payload> = None;
     let body = match iq_stats(iqs) {
         Ok(stats) => {
             let series = pair_series(iqs, &stats);
             let plot = iq_plot(iqs, &stats);
             let plot_html = crate::utils::data::plot_script(&plot, div_id);
-            report_data = Some(payload(iqs, &stats, div_id));
+            data = Some(payload(iqs, &stats, div_id));
             format!(
                 "{}{}{}{}{}",
                 pair_bar(div_id, &series),
@@ -155,7 +155,7 @@ pub fn iq_plot_div(iqs: &[Vec<Complex64>], div_id: &str, frame: Option<&str>) ->
         style: STYLE,
         div_id,
         body,
-        payload: report_data.as_ref(),
+        payload: data.as_ref(),
         frame,
     })
 }

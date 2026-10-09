@@ -51,7 +51,6 @@ fn report(
     }
     let div_id = format!("iq-{seed}");
     divs.push_str(&iq_plot_div(iqs, &div_id, Some(title)));
-    divs.push_str("<hr style=\"border:none;border-top:1px solid #e5e7eb;margin:24px 0\">\n");
 }
 
 /// 射线法：点是否在某个环内。
