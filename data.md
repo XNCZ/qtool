@@ -130,10 +130,8 @@ csv/txt start with a 4-line preamble:
 
 ## 3. One reader per ecosystem
 
-Every block below was **run** on this machine against the generated files — **except MATLAB**: its
-blocks are marked *not run* (no MATLAB here; the `row_`/`units` conventions come from an earlier
-lab-machine run, and their numbers are pending a re-run there — §5). The `→` lines are copied from
-what the commands actually printed.
+Every block below was **run** on this machine against the generated files, MATLAB (R2020b) included.
+The comment under each command is copied from what it actually printed.
 
 One card produces six sibling files — `qspec-z.csv` `qspec-z.txt` `qspec-z.npz` `qspec-z.mat`
 `qspec-z.xlsx` `qspec-z.arrow.zip` — and a report with two cards adds `qspec-z-window.*`
@@ -181,13 +179,15 @@ def load(path, clean=False):
 ```matlab
 m = load("qspec-z.mat");
 
-fieldnames(m)          % {'fits';'flux';'states';'row_0';…;'row_20';'units'}
-fieldnames(m.fits)     % {'row';'z';'fq';'fq_stderr';…}
+fieldnames(m)
+% 25 names: {'fits'; 'flux'; 'states'; 'row_0'; 'row_1'; …; 'row_20'; 'units'}
+fieldnames(m.fits)
+% {'row'; 'z'; 'fq'; 'fq_stderr'; 'fwhm'; 'fwhm_stderr'; 'amp'; 'amp_stderr'; 'offset'; 'offset_stderr'}
 
-m.fits.fq(1)           % 5.036781e+09
-m.fits.row'            % [0 1 2 … 20]     the ref column: its value IS the sub-table's index
-m.row_0.iq(1)          % native complex
-size(m.row_0.freq)     % 121  1
+m.fits.fq(1)           % 5036781280
+m.fits.row(1:5)'       % [0 1 2 3 4]        the ref column: its value IS the sub-table's index
+m.row_0.iq(1)          % 0.3093141838+0.05655247203i     native double complex
+size(m.row_0.freq)     % 121   1
 m.units.fits.fq        % 'Hz'
 ```
 
@@ -392,19 +392,24 @@ m = load("t1-0.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'data'; 'fits'; 'states'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.data)
+% {'tau'; 'iq'; 'iq_sigma'; 'p1'; 'p1_sigma'; 'model'}
 fieldnames(m.fits)
+% {'offset'; 'offset_stderr'; 'amplitude'; 'amplitude_stderr'; 't1'; 't1_stderr'}
 fieldnames(m.states)
+% {'center'}
 
 % size and a value:
 size(m.data.iq)
-m.data.iq(1)     % complex numbers are native double complex
+% 101   1
+m.data.iq(1)
+% 0.4145422299 + 0.279109483i      complex numbers are native double complex
 
 % units live in the parallel units struct:
 m.units.data.tau
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 's'
 ```
 
 #### Julia
@@ -574,19 +579,24 @@ m = load("t2echo-0.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'data'; 'fits'; 'states'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.data)
+% {'tau'; 'iq'; 'iq_sigma'; 'p1'; 'p1_sigma'; 'model'}
 fieldnames(m.fits)
+% {'offset'; 'offset_stderr'; 'amplitude'; 'amplitude_stderr'; 't2_echo'; 't2_echo_stderr'}
 fieldnames(m.states)
+% {'center'}
 
 % size and a value:
 size(m.data.iq)
-m.data.iq(1)     % complex numbers are native double complex
+% 101   1
+m.data.iq(1)
+% 0.3005422299 + 0.08910948304i      complex numbers are native double complex
 
 % units live in the parallel units struct:
 m.units.data.tau
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 's'
 ```
 
 #### Julia
@@ -758,19 +768,24 @@ m = load("ramsey-0.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'data'; 'fits'; 'states'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.data)
+% {'tau'; 'iq'; 'iq_sigma'; 'p1'; 'p1_sigma'; 'model'}
 fieldnames(m.fits)
+% {'offset'; 'offset_stderr'; 'amplitude'; 'amplitude_stderr'; 'frequency'; 'frequency_stderr'; 'phase'; 'phase_stderr'; 'decay'; 'decay_stderr'}
 fieldnames(m.states)
+% {'center'}
 
 % size and a value:
 size(m.data.iq)
-m.data.iq(1)     % complex numbers are native double complex
+% 101   1
+m.data.iq(1)
+% 0.3972546549 + 0.250296858i      complex numbers are native double complex
 
 % units live in the parallel units struct:
 m.units.data.tau
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 's'
 ```
 
 #### Julia
@@ -943,19 +958,24 @@ m = load("rabi-0.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'data'; 'fits'; 'states'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.data)
+% {'amp'; 'iq'; 'iq_sigma'; 'p1'; 'p1_sigma'; 'model'}
 fieldnames(m.fits)
+% {'freq'; 'freq_stderr'; 'amp'; 'amp_stderr'; 'a_pi'; 'a_pi_stderr'}
 fieldnames(m.states)
+% {'center'}
 
 % size and a value:
 size(m.data.iq)
-m.data.iq(1)     % complex numbers are native double complex
+% 41   1
+m.data.iq(1)
+% 0.3005422299 + 0.08910948304i      complex numbers are native double complex
 
 % units live in the parallel units struct:
 m.units.data.amp
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 1
 ```
 
 #### Julia
@@ -1125,19 +1145,24 @@ m = load("qspec-0.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'data'; 'fits'; 'states'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.data)
+% {'freq'; 'iq'; 'iq_sigma'; 'p1'; 'p1_sigma'; 'model'}
 fieldnames(m.fits)
+% {'fq'; 'fq_stderr'; 'fwhm'; 'fwhm_stderr'; 'amp'; 'amp_stderr'; 'offset'; 'offset_stderr'}
 fieldnames(m.states)
+% {'center'}
 
 % size and a value:
 size(m.data.iq)
-m.data.iq(1)     % complex numbers are native double complex
+% 51   1
+m.data.iq(1)
+% 0.3230939541 + 0.1266956899i      complex numbers are native double complex
 
 % units live in the parallel units struct:
 m.units.data.freq
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 'Hz'
 ```
 
 #### Julia
@@ -1323,20 +1348,28 @@ m = load("qspec-z.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% 25 names: {'fits'; 'flux'; 'states'; 'row_0'; …; 'row_20'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.fits)
+% {'row'; 'z'; 'fq'; 'fq_stderr'; 'fwhm'; 'fwhm_stderr'; 'amp'; 'amp_stderr'; 'offset'; 'offset_stderr'}
 fieldnames(m.flux)
+% {'f_max'; 'f_max_stderr'; 'z_offset'; 'z_offset_stderr'; 'z_period'; 'z_period_stderr'; 'eta'; 'eta_stderr'; 'asymmetry'; 'asymmetry_stderr'}
 fieldnames(m.states)
+% {'center'}
 fieldnames(m.row_0)
+% {'freq'; 'iq'; 'p1'; 'model'}
 
 % size and a value:
 size(m.fits.z)
-m.fits.z(1)     % for a single number, take its first point
+% 21   1
+m.fits.z(1)
+% -0.02          for a single number, take its first point
+m.fits.row(1:5)'
+% [0 1 2 3 4]    the ref column: row k lives in the sub-table the value itself names (row_0 here)
 
 % units live in the parallel units struct:
 m.units.fits.z
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 'V'
 ```
 
 #### Julia
@@ -1595,20 +1628,26 @@ m = load("qspec-z-window.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% 25 names: {'fits'; 'flux'; 'states'; 'row_0'; …; 'row_20'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.fits)
+% {'row'; 'z'; 'fq'; 'fq_stderr'; 'fwhm'; 'fwhm_stderr'; 'amp'; 'amp_stderr'; 'offset'; 'offset_stderr'}
 fieldnames(m.flux)
+% {'f_max'; 'f_max_stderr'; 'z_offset'; 'z_offset_stderr'; 'z_period'; 'z_period_stderr'; 'eta'; 'eta_stderr'; 'asymmetry'; 'asymmetry_stderr'}
 fieldnames(m.states)
+% {'center'}
 fieldnames(m.row_0)
+% {'freq'; 'iq'; 'p1'; 'model'}
 
 % size and a value:
 size(m.fits.z)
-m.fits.z(1)     % for a single number, take its first point
+% 21   1
+m.fits.z(1)
+% -0.02          for a single number, take its first point
 
 % units live in the parallel units struct:
 m.units.fits.z
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 'V'
 ```
 
 #### Julia
@@ -1846,18 +1885,22 @@ m = load("demo-ok.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'data'; 'fits'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.data)
+% {'freq'; 'iq'; 'iq_sigma'; 'model'}
 fieldnames(m.fits)
+% 26 names: {'fr'; 'fr_stderr'; 'ql'; 'ql_stderr'; …; 'kappa_ex'; 'kappa_ex_stderr'}
 
 % size and a value:
 size(m.data.iq)
-m.data.iq(1)     % complex numbers are native double complex
+% 51   1
+m.data.iq(1)
+% 3703104890 - 2500032433i      complex numbers are native double complex
 
 % units live in the parallel units struct:
 m.units.data.freq
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 'Hz'
 ```
 
 #### Julia
@@ -2016,18 +2059,22 @@ m = load("power-res0.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% 23 names: {'fits'; 'row_0'; …; 'row_20'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.fits)
+% 28 names: {'row'; 'power'; 'fr'; 'fr_stderr'; …; 'kappa_ex'; 'kappa_ex_stderr'}
 fieldnames(m.row_0)
+% {'freq'; 'iq'; 'iq_sigma'; 'model'}
 
 % size and a value:
 size(m.fits.power)
-m.fits.power(1)     % for a single number, take its first point
+% 21   1
+m.fits.power(1)
+% 0.01          for a single number, take its first point
 
 % units live in the parallel units struct:
 m.units.fits.power
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 'a.u.'
 ```
 
 #### Julia
@@ -2276,20 +2323,26 @@ m = load("iq-99.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'states'; 'density'; 'pairs'; 'row_0'; 'row_1'; 'row_2'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.states)
+% {'state'; 'row'; 'center'}
 fieldnames(m.density)
+% {'state'; 'level'; 'area'; 'radius'}
 fieldnames(m.pairs)
+% {'p'; 'q'; 'separation'; 'threshold'; 'error_rate'; 'auc'; 'snr'}
 fieldnames(m.row_0)
+% {'iq'}
 
 % size and a value:
 size(m.states.state)
-m.states.center(1)     % complex numbers are native double complex
+% 3   1
+m.states.center(1)
+% -0.5000932642 - 0.199394268i      complex numbers are native double complex
 
 % units live in the parallel units struct:
 m.units.states.state
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 1
 ```
 
 #### Julia
@@ -2502,17 +2555,20 @@ m = load("bloch.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'data'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.data)
+% {'axis'; 'x'; 'y'; 'z'}
 
 % size and a value:
 size(m.data.axis)
-m.data.axis(1)     % for a single number, take its first point
+% 61   1
+m.data.axis(1)
+% 0             for a single number, take its first point
 
 % units live in the parallel units struct:
 m.units.data.axis
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 'a.u.'
 ```
 
 #### Julia
@@ -2646,19 +2702,24 @@ m = load("drag-3.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'fits'; 'params'; 'row_0'; 'row_1'; 'row_2'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.fits)
+% {'row'; 'pairs'; 'centre'; 'centre_stderr'; 'fwhm'; 'fwhm_stderr'; 'amp'; 'amp_stderr'; 'offset'; 'offset_stderr'}
 fieldnames(m.params)
+% {'a_pi'; 'a_pi_stderr'; 'chosen'}
 fieldnames(m.row_0)
+% {'amp'; 'iq'; 'p1'; 'model'}
 
 % size and a value:
 size(m.fits.pairs)
-m.fits.pairs(1)     % for a single number, take its first point
+% 2   1
+m.fits.pairs(1)
+% 2             for a single number, take its first point
 
 % units live in the parallel units struct:
 m.units.fits.pairs
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 1
 ```
 
 #### Julia
@@ -2872,19 +2933,24 @@ m = load("drag-coeff-3.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'fits'; 'params'; 'row_0'; 'row_1'; 'row_2'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.fits)
+% {'row'; 'pairs'; 'centre'; 'centre_stderr'; 'fwhm'; 'fwhm_stderr'; 'amp'; 'amp_stderr'; 'offset'; 'offset_stderr'}
 fieldnames(m.params)
+% {'chosen'}
 fieldnames(m.row_0)
+% {'coeff'; 'iq'; 'p1'; 'model'}
 
 % size and a value:
 size(m.fits.pairs)
-m.fits.pairs(1)     % for a single number, take its first point
+% 3   1
+m.fits.pairs(1)
+% 1             for a single number, take its first point
 
 % units live in the parallel units struct:
 m.units.fits.pairs
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 1
 ```
 
 #### Julia
@@ -3102,19 +3168,24 @@ m = load("drag-detuning-3.mat");
 
 % the table list; scan sub-tables are spelled row_0, row_1 … here (MATLAB variable names cannot start with a digit)
 fieldnames(m)
+% {'fits'; 'params'; 'row_0'; 'row_1'; 'row_2'; 'units'}
 % the column names of every table (same-shaped scan sub-tables: only row_0 is listed):
 fieldnames(m.fits)
+% {'row'; 'pairs'; 'centre'; 'centre_stderr'; 'fwhm'; 'fwhm_stderr'; 'amp'; 'amp_stderr'; 'offset'; 'offset_stderr'}
 fieldnames(m.params)
+% {'chosen'}
 fieldnames(m.row_0)
+% {'detuning'; 'iq'; 'p1'; 'model'}
 
 % size and a value:
 size(m.fits.pairs)
-m.fits.pairs(1)     % for a single number, take its first point
+% 3   1
+m.fits.pairs(1)
+% 1             for a single number, take its first point
 
 % units live in the parallel units struct:
 m.units.fits.pairs
-
-% (no MATLAB on this machine — this block is **not run**: the `row_` prefix and the `units` struct layout come from the earlier run on the lab machine; per-report numbers are to be re-run there)
+% 1
 ```
 
 #### Julia
@@ -3291,7 +3362,7 @@ node — same script text the browser runs, only the CDN `import` is swapped for
 | Rust 1.x / arrow 56.2.1 + zip 2 | `.arrow.zip` | `FileReader` | this machine, 2026-10-10 | 14/14: per-table schemas, `Int64` refs, `unit` field metadata, row counts |
 | R 4.5.3 / arrow 25.0.0 | `.arrow.zip` | `read_feather` | this machine, 2026-10-10 | 14/14: names intact, values, `unit` metadata, complex recombined by hand |
 | LibreOffice 25.2 + openpyxl | `.xlsx` | double-click / `load_workbook` | this machine, 2026-10-10 | 14/14: sheet list, `<column> [unit]` headers, `a+bj` complex cells |
-| MATLAB R2020b (9.9) | `.mat` | `load` | lab machine, 2026-10-09 | `.mat` shape verified (`row_` prefix and `units` struct come from that run); per-report numbers to be re-run there |
+| MATLAB R2020b (9.9) | `.mat` | `load` | this machine, 2026-10-10 | 14/14: table list, every `fieldnames`, shapes, native complex values, `units` struct, `row_<i>` scan tables |
 
 The `s21 vs power` card needed the lab's `data/s21/fit_input.bin` (not in the repo), so a synthetic
 21-line power scan was generated for the run above — same code path, different numbers.
