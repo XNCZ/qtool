@@ -288,7 +288,7 @@ struct ParamSeries {
     /// 该项的颜色：实测量蓝、模型参数红（见 [`DIP_COLOR`]）。
     color: &'static str,
     /// 选中这一项时叠在图上的参考线与标注；只有实测谷位 `f_dip` 有。
-    reference: Option<ShiftLines>,
+    shift: Option<ShiftLines>,
 }
 
 /// 线图上可画的全部量：实测谷位 `f_dip` 在首位（即下拉框的默认项），其后是参数表里那
@@ -308,7 +308,7 @@ fn param_series(freqs_hz: &[f64], lines: &[PowerLine<'_>]) -> Vec<ParamSeries> {
         label: "f_dip (Hz)".to_string(),
         stderr: vec![f64::NAN; lines.len()],
         color: DIP_COLOR,
-        reference: shift_lines(&dips),
+        shift: shift_lines(&dips),
         value: dips,
     }];
     series.extend(
@@ -326,7 +326,7 @@ fn param_series(freqs_hz: &[f64], lines: &[PowerLine<'_>]) -> Vec<ParamSeries> {
                 value: Vec::with_capacity(lines.len()),
                 stderr: Vec::with_capacity(lines.len()),
                 color: FIT_COLOR,
-                reference: None,
+                shift: None,
             }),
     );
     for line in lines {
@@ -378,7 +378,7 @@ fn param_line_plot(powers: &[f64], series: &[ParamSeries], div_id: &str) -> Stri
         Some(&first.stderr),
         &first.label,
         first.color,
-        first.reference.as_ref(),
+        first.shift.as_ref(),
     );
     let options: Vec<String> = series
         .iter()
@@ -393,13 +393,13 @@ fn param_line_plot(powers: &[f64], series: &[ParamSeries], div_id: &str) -> Stri
         .iter()
         .map(|item| {
             format!(
-                "\"{}\":{{\"label\":\"{}\",\"color\":\"{}\",\"value\":{},\"err\":{},\"ref\":{}}}",
+                "\"{}\":{{\"label\":\"{}\",\"color\":\"{}\",\"value\":{},\"err\":{},\"shift\":{}}}",
                 item.name,
                 item.label,
                 item.color,
                 crate::utils::heatmap::json_array(&item.value),
                 crate::utils::heatmap::json_array(&item.stderr),
-                reference_json(item.reference.as_ref())
+                shift_json(item.shift.as_ref())
             )
         })
         .collect();
@@ -431,7 +431,7 @@ fn param_line_plot(powers: &[f64], series: &[ParamSeries], div_id: &str) -> Stri
       "error_y.visible": [true]
     }}, [0]);
     // y 轴标题与参考线一起换：只有 f_dip 那一项带参考线，其余各项都是空数组，等于抹掉
-    Plotly.relayout(gd, {{ "yaxis.title.text": item.label, "shapes": item.ref.shapes, "annotations": item.ref.annotations }});
+    Plotly.relayout(gd, {{ "yaxis.title.text": item.label, "shapes": item.shift.shapes, "annotations": item.shift.annotations }});
     fitWidth();
   }};
   select.onchange = function () {{
@@ -457,7 +457,7 @@ fn line_plot_html(
     errors: Option<&[f64]>,
     y_title: &str,
     color: &'static str,
-    reference: Option<&ShiftLines>,
+    shift: Option<&ShiftLines>,
 ) -> String {
     let mut scatter = Scatter::new(powers.to_vec(), values.to_vec())
         .mode(Mode::LinesMarkers)
@@ -497,9 +497,9 @@ fn line_plot_html(
                 .tick_format(".2g"),
         ))
         .y_axis(axis_style(Axis::new().title(y_title)));
-    match reference {
-        Some(reference) => {
-            let (shapes, annotations) = reference_layout(reference);
+    match shift {
+        Some(shift) => {
+            let (shapes, annotations) = shift_layout(shift);
             layout = layout.shapes(shapes).annotations(annotations);
         }
         None => {}
@@ -576,9 +576,9 @@ fn shift_label(delta_hz: f64) -> String {
 
 /// 参考线与标注本身：最低/最高功率的谷位各画一条浅灰虚线（画在数据下面），差值标在两条线
 /// 中间。发图用的 layout 与切视图时脚本的 `relayout` 共用同一份。
-fn reference_layout(reference: &ShiftLines) -> (Vec<Shape>, Vec<Annotation>) {
+fn shift_layout(shift: &ShiftLines) -> (Vec<Shape>, Vec<Annotation>) {
     let mut shapes: Vec<Shape> = Vec::with_capacity(2);
-    for level in [reference.low, reference.high] {
+    for level in [shift.low, shift.high] {
         shapes.push(
             Shape::new()
                 .shape_type(ShapeType::Line)
@@ -599,9 +599,9 @@ fn reference_layout(reference: &ShiftLines) -> (Vec<Shape>, Vec<Annotation>) {
     }
     let annotations = vec![
         Annotation::new()
-            .text(reference.label.clone())
+            .text(shift.label.clone())
             .x(0.99)
-            .y((reference.low + reference.high) / 2.0)
+            .y((shift.low + shift.high) / 2.0)
             .x_ref("paper")
             .y_ref("y")
             .x_anchor(Anchor::Right)
@@ -616,11 +616,11 @@ fn reference_layout(reference: &ShiftLines) -> (Vec<Shape>, Vec<Annotation>) {
     (shapes, annotations)
 }
 
-/// [`reference_layout`] 的 JSON：脚本切视图时拿它 `relayout`。没有参考线时给空数组，
+/// [`shift_layout`] 的 JSON：脚本切视图时拿它 `relayout`。没有参考线时给空数组，
 /// 序列化失败同样给空数组——页面上少两条参考线，而不是整张图跟着崩掉。
-fn reference_json(reference: Option<&ShiftLines>) -> String {
-    let (shapes, annotations) = match reference {
-        Some(reference) => reference_layout(reference),
+fn shift_json(shift: Option<&ShiftLines>) -> String {
+    let (shapes, annotations) = match shift {
+        Some(shift) => shift_layout(shift),
         None => (Vec::new(), Vec::new()),
     };
     let shapes = match serde_json::to_string(&shapes) {
