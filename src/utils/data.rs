@@ -1,7 +1,8 @@
 //! 报告内蕴数据：载荷的构建、序列化，与浏览器端的导出脚本。
 //!
 //! 每张报告把"喂进拟合的输入 + 拟合结果 + 标定中心"内蕴成一份 JSON（`<script type="application/json"
-//! id="{div_id}-data">`）随页面交付；五枚 modebar 按钮在浏览器端把它转成 csv / txt / npz / mat / xlsx。
+//! id="{div_id}-data">`）随页面交付；六枚 modebar 按钮在浏览器端把它转成
+//! csv / txt / npz / mat / xlsx / arrow（arrow = 一表一条 Feather 的 zip）。
 //! 数据只在这里定义一次，各报告只负责给出自己的列——格式差异是数据（一张表的列表），不是分支代码。
 //!
 //! **列存**：一张表 = 列定义 + 每列一个值数组；复数是 `[re, im]` 两元数组（与 `complex128`、
@@ -15,7 +16,10 @@
 //! 数字表名只有 `.mat` 需要转义：MATLAB 的变量名不能以数字开头（实测整份文件 `load` 都失败），
 //! 故写入时加 `row_` 前缀（`m.row_0`）——见 [`EXPORT_SCRIPT`] 里的 `varName`。
 //!
-//! 单位一律 SI（无量纲写 `1`），与各分析与报告的口径一致。
+//! 单位一律 SI（无量纲写 `1`），与各分析与报告的口径一致。`1` 只是"量纲为一"这个单位本身，
+//! 不表示取值被归一到 0–1：`p1 [1]` 恰好是概率（0 = |0> 端、1 = |1> 端），而 `ql [1]`
+//! （品质因数，上万）与 `snr [1]`（几倍）同样是 `[1]`。任意单位写 `a.u.`（IQ 未标定），
+//! 面积之类是 `a.u.^2`。
 
 use crate::utils::heatmap::escape_html;
 use plotly::Plot;
@@ -413,15 +417,17 @@ pub(crate) fn plot_script(plot: &Plot, name: &str) -> String {
 
 /// 浏览器端的导出脚本（每张报告内联一份，`window.qtoolExport` 幂等注册）。
 ///
-/// 两个格式库走 CDN 的 ESM 动态 `import`（首次点击时才拉）；csv / txt / npz / mat 不需要任何库
-/// （npy 与 MAT v5 的容器都在这里自己拼）。载荷与五种格式之间的换算全部写在这里，报告侧只给列。
+/// 三个格式库走 CDN 的 ESM 动态 `import`（首次点击时才拉，Arrow 那份只在点它的按钮时才拉）；
+/// csv / txt / npz / mat 不需要任何库（npy 与 MAT v5 的容器都在这里自己拼）。载荷与六种格式
+/// 之间的换算全部写在这里，报告侧只给列。
 pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
 (function () {
   if (window.qtoolExport) { return; }
   var QE = {};
   var CDN = {
     fflate: "https://cdn.jsdelivr.net/npm/fflate@0.8.2/+esm",
-    sheetjs: "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm"
+    sheetjs: "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm",
+    arrow: "https://cdn.jsdelivr.net/npm/apache-arrow@17.0.0/+esm"
   };
 
   /* 首次用到时才拉库；同一页里多个报告共用同一份（module 说明符按 URL 去重） */
@@ -431,10 +437,24 @@ pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
       libsPromise = Promise.all([
         import(CDN.fflate), import(CDN.sheetjs)
       ]).then(function (mods) {
-        QE.libs = { zipSync: mods[0].zipSync, XLSX: mods[1].default || mods[1] };
+        QE.libs = QE.libs || {};
+        QE.libs.zipSync = mods[0].zipSync;
+        QE.libs.XLSX = mods[1].default || mods[1];
       });
     }
     return libsPromise;
+  }
+
+  /* Arrow 只在点它的按钮时才拉（最大的一份，别让 npz / xlsx 跟着付这个钱） */
+  var arrowPromise = null;
+  function arrowLib() {
+    if (!arrowPromise) {
+      arrowPromise = import(CDN.arrow).then(function (mod) {
+        QE.libs = QE.libs || {};
+        QE.libs.arrow = mod;
+      });
+    }
+    return arrowPromise;
   }
 
   /* 载荷：从图 div 一路上溯，取最近一个带载荷的卡片里的 JSON 脚本。报告自己的图第一层就命中；
@@ -578,6 +598,60 @@ pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
     bytes.set(new TextEncoder().encode(head), 10);
     bytes.set(new Uint8Array(buffer), 10 + head.length);
     return bytes;
+  }
+
+  /* 一表一条 Arrow IPC file（Feather v2）。Arrow 没有复数类型，复数列拆成 `<列名>_re` 与
+     `<列名>_im` 两列；单位进**字段元数据** `unit`（Rust 侧 `f.metadata().get("unit")`、R 侧
+     `sch$GetFieldByName("fq")$metadata` 都从这里读）；外键列落 int64，其余实数落 float64。 */
+  function arrowTable(table) {
+    var A = QE.libs.arrow;
+    var rows = tableRows(table);
+    var count = rowCount(table);
+    var fields = [];
+    var vectors = [];
+    table.columns.forEach(function (column, index) {
+      var unit = new Map([["unit", column.unit]]);
+      var push = function (key, values, type) {
+        fields.push(new A.Field(key, type, true, unit));
+        vectors.push(A.makeVector(values));
+      };
+      var values = rows[index];
+      var point = 0;
+      if (column.kind === "complex") {
+        var re = new Float64Array(count);
+        var im = new Float64Array(count);
+        for (point = 0; point < count; point++) {
+          var pair = values[point];
+          re[point] = pair ? pair[0] : NaN;
+          im[point] = pair ? pair[1] : NaN;
+        }
+        push(column.key + "_re", re, new A.Float64());
+        push(column.key + "_im", im, new A.Float64());
+        return;
+      }
+      if (column.kind === "ref") {
+        var keys = new BigInt64Array(count);
+        for (point = 0; point < count; point++) {
+          var key = values[point];
+          keys[point] = BigInt(typeof key === "number" ? Math.round(key) : 0);
+        }
+        push(column.key, keys, new A.Int64());
+        return;
+      }
+      var floats = new Float64Array(count);
+      for (point = 0; point < count; point++) {
+        var cell = values[point];
+        floats[point] = typeof cell === "number" ? cell : NaN;
+      }
+      push(column.key, floats, new A.Float64());
+    });
+    /* 元数据只活在 schema 上，所以得自己装配：`new Table(schema, ...vectors)` 那条路走不通——
+       Table 的构造器会把向量当可迭代对象摊成标量，行数直接归零（实测 0 rows）。 */
+    var data = A.makeData({
+      type: new A.Struct(fields), length: count, nullCount: 0,
+      children: vectors.map(function (vector) { return vector.data[0]; })
+    });
+    return new A.Table(new A.RecordBatch(new A.Schema(fields), data));
   }
 
   /* MAT v5（level 5）二进制：一个变量一个 miMATRIX，元素是 double（有复数列时按复数落）。
@@ -729,6 +803,15 @@ pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
       return { ext: "mat", mime: "application/octet-stream",
                blob: new Blob([matBytes(payload)], { type: "application/octet-stream" }) };
     },
+    arrow: function (payload) {
+      var entries = {};
+      payload.tables.forEach(function (table) {
+        entries[table.name + ".arrow"] =
+          QE.libs.arrow.tableToIPC(arrowTable(table), "file");
+      });
+      return { ext: "arrow.zip", mime: "application/zip",
+               blob: new Blob([QE.libs.zipSync(entries)], { type: "application/zip" }) };
+    },
     xlsx: function (payload) {
       var book = QE.libs.XLSX.utils.book_new();
       payload.tables.forEach(function (table) {
@@ -758,7 +841,8 @@ pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
   QE.download = function (gd, fmt) {
     var data = payload(gd);
     if (!data) { return; }
-    var ready = (fmt === "csv" || fmt === "txt") ? Promise.resolve() : libs();
+    var ready = (fmt === "csv" || fmt === "txt") ? Promise.resolve()
+      : (fmt === "arrow" ? Promise.all([libs(), arrowLib()]) : libs());
     ready.then(function () {
       var file = QE.format[fmt](data);
       var url = URL.createObjectURL(file.blob);
@@ -772,15 +856,16 @@ pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
     });
   };
 
-  /* 五枚按钮：下载箭头 + 各自的文件记号（自绘，不用任何商标 logo） */
+  /* 六枚按钮：下载箭头 + 各自的文件记号（自绘，不用任何商标 logo） */
   var ICON = {
     csv: "M11.4 2.6h1.2v8.2h-1.2zM12 14.6 6.4 9.3h11.2zM6 16.2h5.2v1.2H6zM12.8 16.2H18v1.2h-5.2zM6 18.6h4v1.2H6zM11.2 18.6H18v1.2h-6.8zM6 21h6v1.2H6z",
     txt: "M11.4 2.6h1.2v8.2h-1.2zM12 14.6 6.4 9.3h11.2zM6 16.2h12v1.2H6zM6 18.6h12v1.2H6zM6 21h12v1.2H6z",
     npz: "M11.4 2.6h1.2v8.2h-1.2zM12 14.6 6.4 9.3h11.2zM6 16.2h3.2v2.4H6zM10.4 16.2h3.2v2.4h-3.2zM14.8 16.2H18v2.4h-3.2zM6 19.8h3.2V22H6zM10.4 19.8h3.2V22h-3.2zM14.8 19.8H18V22h-3.2z",
     mat: "M11.4 2.6h1.2v8.2h-1.2zM12 14.6 6.4 9.3h11.2zM5.6 16h1.2v6H5.6zM5.6 16h2.8v1.2H5.6zM5.6 20.8h2.8V22H5.6zM17.2 16h1.2v6h-1.2zM15.6 16h2.8v1.2h-2.8zM15.6 20.8h2.8V22h-2.8zM9.6 17.4h2v2H9.6zM12.9 17.4h2v2h-2z",
-    xlsx: "M11.4 2.6h1.2v8.2h-1.2zM12 14.6 6.4 9.3h11.2zM6 16h12v1.1H6zM6 20.9h12V22H6zM6 16h1.1v6H6zM16.9 16H18v6h-1.1zM10.6 16h1.1v6h-1.1zM14 16h1.1v6H14z"
+    xlsx: "M11.4 2.6h1.2v8.2h-1.2zM12 14.6 6.4 9.3h11.2zM6 16h12v1.1H6zM6 20.9h12V22H6zM6 16h1.1v6H6zM16.9 16H18v6h-1.1zM10.6 16h1.1v6h-1.1zM14 16h1.1v6H14z",
+    arrow: "M11.4 2.6h1.2v8.2h-1.2zM12 14.6 6.4 9.3h11.2zM5.8 18.55h8.4v1.3H5.8zM13.4 16.4 18.4 19.2 13.4 22z"
   };
-  QE.buttons = ["csv", "txt", "npz", "mat", "xlsx"].map(function (fmt) {
+  QE.buttons = ["csv", "txt", "npz", "mat", "xlsx", "arrow"].map(function (fmt) {
     return { name: fmt, title: "download " + fmt, icon: { width: 24, height: 24, path: ICON[fmt] },
              click: function (gd) { QE.download(gd, fmt); } };
   });

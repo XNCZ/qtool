@@ -34,7 +34,7 @@ figure is live: hover, legend toggles, zoom, and — for the Bloch sphere — or
 and scroll zoom. The images below are screenshots of exactly those pages; every one of
 them is produced by the demo of the same name (`cargo run --release --example <name>`).
 
-<!-- 图片走绝对 raw URL：crates.io 能解析相对路径，PyPI 不能（camo 代理），一套 URL 两边通吃 -->
+<!-- Images use absolute raw URLs: crates.io resolves relative paths but PyPI does not (the camo proxy), so one set of URLs works on both -->
 
 <details>
 <summary><b>s21</b> — resonator spectroscopy, 11-parameter complex model</summary>
@@ -200,6 +200,29 @@ filled ball (even translucent) would occlude every point inside it.
 
 `cargo run --release --example bloch_demo` · `qtool.bloch.bloch_vector(...)` · [live page](https://xncz.github.io/qtool/bloch_demo.html)
 </details>
+
+## Data export
+
+Every card carries its payload **inside the HTML fragment** — the same numbers the figure is
+drawn from — and adds six buttons to the plotly modebar: `csv`, `txt`, `npz`, `mat`, `xlsx`
+and `arrow`. A click downloads `<div_id>.<ext>` (`t1-0.npz`, `qspec-z.arrow.zip`, …), with no
+server and no notebook in the loop.
+
+The payload is self-describing: one table per scan, column names tagged with their SI unit,
+complex numbers kept complex, and `ref` columns that name the scan sub-tables. Each ecosystem
+has one format it is expected to read:
+
+| who | reads | why |
+|---|---|---|
+| Python | `.npz` | numpy is already there; structured arrays carry the names, units and dtypes |
+| MATLAB / Julia | `.mat` | `load` + struct field access, native complex, nothing to install |
+| Rust / R | `.arrow.zip` | one Feather (Arrow IPC) file per table; the schema holds the units |
+| humans | `.xlsx` | double-click; one sheet per table, `<column> [unit]` headers |
+
+`.csv` / `.txt` need no library anywhere and remain the fallback.
+
+**[data.md](data.md)** documents the payload field by field, the six containers, and one
+verified reader per ecosystem — the real commands and their real output for all 14 payloads.
 
 ## Quick start
 
