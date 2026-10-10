@@ -8,9 +8,12 @@
 //! MATLAB complex double 的语义一致，导出时再拍成交错缓冲），缺值是 `null`。
 //!
 //! **表的分工**：`data` 逐点长表、`fits` 逐拟合一行的参数表、`params` 全局标量、`states` 标定
-//! 中心；多行报告另有逐行明细子表 `row_<i>`，由 `fits` 里 `kind = "ref"` 的 `row` 列指向
-//! （值就是那个 `i`，表名即 `row_` 加它）。行号是实数，所以五个导出格式都照数值列落格，
-//! 表名也全是合法标识符（不必再净化）。
+//! 中心；多行报告另有逐行明细子表，表名就是行号本身（`0`、`1`…），由 `fits` 里 `kind = "ref"`
+//! 的 `row` 列指向——**值即表名**，`tables[str(row)]` 直接命中。行号是实数，所以五个导出格式都
+//! 照数值列落格。
+//!
+//! 数字表名只有 `.mat` 需要转义：MATLAB 的变量名不能以数字开头（实测整份文件 `load` 都失败），
+//! 故写入时加 `row_` 前缀（`m.row_0`）——见 [`EXPORT_SCRIPT`] 里的 `varName`。
 //!
 //! 单位一律 SI（无量纲写 `1`），与各分析与报告的口径一致。
 
@@ -36,7 +39,7 @@ pub(crate) enum Kind {
     Real,
     /// 复数
     Complex,
-    /// 指向另一张表的行号（`row` = i ⇒ 表 `row_<i>`）
+    /// 指向另一张表的行号（`row` = i ⇒ 表 `i`）
     Ref,
 }
 
@@ -95,8 +98,8 @@ impl Column {
         }
     }
 
-    /// 指向另一张表的行号列（`kind = "ref"`）：值是该行在报告里的行号，表名由 `row_`
-    /// 加这个数得到。值仍是实数，五个导出格式都照数值列落格。
+    /// 指向另一张表的行号列（`kind = "ref"`）：值是该行在报告里的行号，**这个数就是表名**
+    /// （`.mat` 写入时加 `row_` 前缀）。值仍是实数，五个导出格式都照数值列落格。
     ///
     /// 形参:
     ///     key: 列名
@@ -410,14 +413,13 @@ pub(crate) fn plot_script(plot: &Plot, name: &str) -> String {
 
 /// 浏览器端的导出脚本（每张报告内联一份，`window.qtoolExport` 幂等注册）。
 ///
-/// 四个格式库走 CDN 的 ESM 动态 `import`（首次点击时才拉）；csv 与 txt 不需要任何库。载荷与
-/// 五种格式之间的换算全部写在这里，报告侧只负责给列。
+/// 两个格式库走 CDN 的 ESM 动态 `import`（首次点击时才拉）；csv / txt / npz / mat 不需要任何库
+/// （npy 与 MAT v5 的容器都在这里自己拼）。载荷与五种格式之间的换算全部写在这里，报告侧只给列。
 pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
 (function () {
   if (window.qtoolExport) { return; }
   var QE = {};
   var CDN = {
-    npyjs: "https://cdn.jsdelivr.net/npm/npyjs@1.2.0/+esm",
     fflate: "https://cdn.jsdelivr.net/npm/fflate@0.8.2/+esm",
     sheetjs: "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm"
   };
@@ -427,10 +429,9 @@ pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
   function libs() {
     if (!libsPromise) {
       libsPromise = Promise.all([
-        import(CDN.npyjs), import(CDN.fflate), import(CDN.sheetjs)
+        import(CDN.fflate), import(CDN.sheetjs)
       ]).then(function (mods) {
-        QE.libs = { dump: mods[0].dump, zipSync: mods[1].zipSync,
-                    XLSX: mods[2].default || mods[2] };
+        QE.libs = { zipSync: mods[0].zipSync, XLSX: mods[1].default || mods[1] };
       });
     }
     return libsPromise;
@@ -503,23 +504,80 @@ pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
              blob: new Blob([header(payload) + "\n" + blocks.join("\n") + "\n"], { type: mime }) };
   }
 
-  /* 一表一个数值矩阵：有复数列时按 [re,im] 交错（complex128），否则一列一个数
-     （文本/缺值落 NaN）；shape 恒为 [行数, 列数] */
-  function matrix(table) {
+  /* 一列的取值盒：n×1 的列向量（MATLAB 的字段、npy 的字段都用它）。复数列按 [re,im] 交错
+     （complex128 / MATLAB complex double 同语义），文本与缺值落 NaN。 */
+  function columnBox(table, index) {
     var rows = tableRows(table);
     var count = rowCount(table);
-    var complex = table.columns.some(function (c) { return c.kind === "complex"; });
+    if (table.columns[index].kind === "complex") {
+      var pairs = [];
+      for (var i = 0; i < count; i++) {
+        var value = rows[index][i];
+        var pair = (value !== null && value !== undefined) ? value : [NaN, NaN];
+        pairs.push(pair[0], pair[1]);
+      }
+      return { values: Float64Array.from(pairs), shape: [count, 1], complex: true, dtype: "c16" };
+    }
     var flat = [];
+    for (var k = 0; k < count; k++) {
+      var cell = rows[index][k];
+      flat.push(typeof cell === "number" ? cell : NaN);
+    }
+    return { values: Float64Array.from(flat), shape: [count, 1], complex: false, dtype: "f8" };
+  }
+
+  /* 字段名的两种写法：**name 带单位**（`fits.dtype.names` 一眼看到 `t1 [s]`，也与 xlsx 表头
+     同一套），**title 是干净的列名**（numpy 允许按字段名**或它的 title** 索引，所以
+     `fits["t1"]` 与 `fits["t1 [s]"]` 都能取到同一列）。 */
+  function fieldName(column) { return column.key + " [" + column.unit + "]"; }
+
+  /* numpy 的 structured array：一表一条 (n,) 记录数组，字段 = 列。
+     容器自己拼（npy v1：magic + 版本 + 头长度 + 头 + 缓冲）——npyjs 只会写单 dtype 的普通
+     数组，而我们要的是带字段名与逐列类型的 descr。类型：实数列 <f8、复数列 <c16、
+     外键列 <i8（整数，不再是浮点）。 */
+  function npyStructured(table) {
+    var columns = tableRows(table);
+    var count = rowCount(table);
+    var fields = table.columns.map(function (column) {
+      return { title: column.key, name: fieldName(column), kind: column.kind,
+               dtype: column.kind === "complex" ? "<c16" : (column.kind === "ref" ? "<i8" : "<f8"),
+               size: column.kind === "complex" ? 16 : 8 };
+    });
+    var descr = fields.map(function (f) {
+      return "(('" + f.title + "', '" + f.name + "'), '" + f.dtype + "')";
+    }).join(", ");
+    var dict = "{'descr': [" + descr + "], 'fortran_order': False, 'shape': (" + count + ",), }";
+    /* 头用空格补到 (10 + 头长) % 64 == 0，且以 \n 收尾——numpy 的 v1 规矩 */
+    var pad = (64 - ((10 + dict.length + 1) % 64)) % 64;
+    var head = dict + new Array(pad + 1).join(" ") + "\n";
+    var magic = new Uint8Array(10);
+    magic.set([0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59], 0);        /* \x93 N U M P Y */
+    magic[6] = 1; magic[7] = 0;                                 /* v1 */
+    new DataView(magic.buffer).setUint16(8, head.length, true); /* 头长度（含 \n 与补白） */
+    var width = fields.reduce(function (sum, f) { return sum + f.size; }, 0);
+    var buffer = new ArrayBuffer(width * count);
+    var view = new DataView(buffer);
+    var offset = 0;
     for (var i = 0; i < count; i++) {
-      for (var j = 0; j < table.columns.length; j++) {
-        var value = rows[j][i];
-        var pair = (table.columns[j].kind === "complex" && value !== null && value !== undefined)
-          ? value : (typeof value === "number" ? [value, 0] : [NaN, 0]);
-        if (complex) { flat.push(pair[0], pair[1]); } else { flat.push(pair[0]); }
+      for (var j = 0; j < fields.length; j++) {
+        var value = columns[j][i];
+        if (fields[j].kind === "complex") {
+          var pair = (value !== null && value !== undefined) ? value : [NaN, NaN];
+          view.setFloat64(offset, pair[0], true);
+          view.setFloat64(offset + 8, pair[1], true);
+        } else if (fields[j].kind === "ref") {
+          view.setBigInt64(offset, BigInt(typeof value === "number" ? Math.round(value) : 0), true);
+        } else {
+          view.setFloat64(offset, typeof value === "number" ? value : NaN, true);
+        }
+        offset += fields[j].size;
       }
     }
-    return { values: Float64Array.from(flat), shape: [count, table.columns.length],
-             complex: complex, dtype: complex ? "c16" : "f8" };
+    var bytes = new Uint8Array(10 + head.length + buffer.byteLength);
+    bytes.set(magic, 0);
+    bytes.set(new TextEncoder().encode(head), 10);
+    bytes.set(new Uint8Array(buffer), 10 + head.length);
+    return bytes;
   }
 
   /* MAT v5（level 5）二进制：一个变量一个 miMATRIX，元素是 double（有复数列时按复数落）。
@@ -562,8 +620,7 @@ pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
     var rest = bytes.length % 8;
     return rest === 0 ? bytes : concat([bytes, new Uint8Array(8 - rest)]);
   }
-  /* 矩阵按**列主序**装（MATLAB 的存储顺序）：matrix() 给的是行主序（numpy 的口径），
-     这里按列遍历取值，两种顺序各自出现在该出现的地方 */
+  /* 数值矩阵按**列主序**装（MATLAB 的存储顺序）：box 是 n×1 的列向量，本就没有歧义 */
   function matVariable(name, box) {
     var nameBytes = new TextEncoder().encode(name);
     var body = [
@@ -585,6 +642,48 @@ pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
     var payload = concat(body);
     return concat([matTag(14, payload.length), payload]);
   }
+  /* struct（mxSTRUCT_CLASS）：固定槽宽的字段名数组在前，随后每个字段一个 miMATRIX。
+     entries: [{key: 名字, data: 已编码的 miMATRIX 字节}] —— 值本身也可以是 struct，故可嵌套 */
+  function matStruct(name, entries) {
+    var width = 1;
+    entries.forEach(function (entry) { width = Math.max(width, varName(entry.key).length + 1); });
+    var slots = new Uint8Array(width * entries.length);
+    entries.forEach(function (entry, index) {
+      var key = varName(entry.key);
+      for (var i = 0; i < key.length; i++) { slots[index * width + i] = key.charCodeAt(i) & 0xff; }
+    });
+    var nameBytes = new TextEncoder().encode(name);
+    var body = [
+      concat([matTag(6, 8), u32(0x0002), u32(0)]),            /* 类别 = struct */
+      concat([matTag(5, 8), i32(1), i32(1)]),                 /* 1×1 */
+      concat([matTag(1, nameBytes.length), pad8(nameBytes)]),
+      concat([matTag(5, 4), pad8(i32(width))]),               /* 字段名槽宽（含结尾的 \0）；4 字节也要补齐 */
+      concat([matTag(1, slots.length), pad8(slots)])
+    ];
+    entries.forEach(function (entry) { body.push(entry.data); });
+    var payload = concat(body);
+    return concat([matTag(14, payload.length), payload]);
+  }
+
+  /* 字符数组（mxCHAR_CLASS，元素是 UTF-16）：单位这种短文本用它 */
+  function matCharVariable(name, text) {
+    var data = new Uint8Array(2 * text.length);
+    var view = new DataView(data.buffer);
+    for (var i = 0; i < text.length; i++) { view.setUint16(2 * i, text.charCodeAt(i), true); }
+    var nameBytes = new TextEncoder().encode(name);
+    var body = [
+      concat([matTag(6, 8), u32(0x0004), u32(0)]),            /* 类别 = char */
+      concat([matTag(5, 8), i32(1), i32(text.length)]),
+      concat([matTag(1, nameBytes.length), pad8(nameBytes)]),
+      concat([matTag(4, data.length), pad8(data)])            /* miUINT16；数据也要补齐 */
+    ];
+    var payload = concat(body);
+    return concat([matTag(14, payload.length), payload]);
+  }
+
+  /* 一表一个 1×1 struct，字段 = 列（n×1 列向量）：MATLAB 侧因此是 `fieldnames(m.fits)` 给表头、
+     `m.fits.t1` 按名取列。单位另给一个 `units` struct（`m.units.fits.t1` = 's'）——MATLAB 的
+     字段名不允许空格与方括号（实测 `'t1 [s]'` 报「字段名称无效」），所以单位只能走值。 */
   function matBytes(payload) {
     var header = new Uint8Array(128);
     var text = new TextEncoder().encode("MATLAB 5.0 MAT-file, Platform: JS, Created by qtool");
@@ -593,30 +692,36 @@ pub(crate) const EXPORT_SCRIPT: &str = r##"<script type="text/javascript">
     header[126] = 0x49; header[127] = 0x4d;               /* 'IM'：小端 */
     var parts = [header];
     payload.tables.forEach(function (table) {
-      parts.push(matVariable(varName(table.name), matrix(table)));
+      var entries = table.columns.map(function (column, index) {
+        return { key: column.key, data: matVariable(varName(column.key), columnBox(table, index)) };
+      });
+      parts.push(matStruct(varName(table.name), entries));
     });
+    var units = payload.tables.map(function (table) {
+      var entries = table.columns.map(function (column) {
+        return { key: column.key, data: matCharVariable(varName(column.key), column.unit) };
+      });
+      return { key: table.name, data: matStruct(varName(table.name), entries) };
+    });
+    parts.push(matStruct("units", units));
     return concat(parts);
   }
 
   function sheetName(name) { return name.replace(/[\[\]:*?\/\\]/g, "_").slice(0, 31); }
-  function varName(name) { return name.replace(/[^0-9A-Za-z_]/g, "_").replace(/^([0-9])/, "v$1"); }
+  /* .mat 里的名字必须是合法 MATLAB 标识符：其余字符换 `_`，数字开头的加 `row_` 前缀。
+     数字表名只有逐行明细子表（表名即行号），所以 `m.row_0` 就是它们——MATLAB 的变量名
+     不能以数字开头，不加前缀整份文件都 load 不了（实测 MATLAB:AddField:InvalidFieldName）。 */
+  function varName(name) { return name.replace(/[^0-9A-Za-z_]/g, "_").replace(/^([0-9])/, "row_$1"); }
 
   QE.format = {
     csv: function (payload) { return textFile(payload, ",", "csv", "text/csv"); },
     txt: function (payload) { return textFile(payload, "\t", "txt", "text/plain"); },
     npz: function (payload) {
-      /* zipSync 只认 Uint8Array 叶子：numpy 的字节要转一层，列名清单要自己编码 */
+      /* 一表一个 structured npy（字段名 = 列，自带单位）；zipSync 只认 Uint8Array 叶子 */
       var entries = {};
-      var meta = [];
       payload.tables.forEach(function (table) {
-        var box = matrix(table);
-        entries[table.name + ".npy"] =
-          new Uint8Array(QE.libs.dump(box.values, box.shape, { dtype: box.dtype }));
-        meta.push(table.name + ": " + table.columns.map(function (c) {
-          return c.key + "[" + c.unit + "," + c.kind + "]";
-        }).join(", "));
+        entries[table.name + ".npy"] = npyStructured(table);
       });
-      entries["columns.txt"] = new TextEncoder().encode(meta.join("\n") + "\n");
       return { ext: "npz", mime: "application/zip",
                blob: new Blob([QE.libs.zipSync(entries)], { type: "application/zip" }) };
     },

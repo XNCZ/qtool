@@ -1,15 +1,15 @@
-//! S21 功率扫描的二维报告（feature = "plot"）：两张并排热图 + 行面板交互。
+//! S21 功率扫描的二维报告（feature = "plot"）：一张可切换的热图 + 线图 + 行面板交互。
 //!
-//! - 热图一：颜色 = |S21|；热图二：颜色 = unwrap + detrend 后的相位（与
-//!   [`s21_plot`](crate::superconductor::s21::s21_plot) 的相位面板同口径）；
-//! - 两张热图都由 [`crate::utils::heatmap::heatmap`] 生成（点击取
+//! - 热图：颜色 = unwrap + detrend 后的相位（默认）或 |S21|，由图名行的下拉框切换——两者
+//!   分别与 [`s21_plot`](crate::superconductor::s21::s21_plot) 的相位 / 幅度面板同口径；
+//! - 热图由 [`crate::utils::heatmap::heatmap`] 生成（点击取
 //!   该点的 row / col 到右、下边线图，带 continuous error bar）；
 //! - **hover 到某一行** → 跟随光标的对话气泡显示该功率的 S21 四面板（首次使用时才渲染）；
 //! - **double click** → 把气泡**原地**钉成固定浮层（位置不再跟走、移开鼠标也不消失；
 //!   可多个、按行去重、允许重叠），每个浮层带 × 关闭；
-//! - 热图下方两张线图：左 = 实测谷位 `f_dip` vs power（与模型无关）；右 = 下拉框选一个
-//!   参数（参数表里的 13 个），画该参数逐功率档的拟合值 + stderr（模型给的量，与 f_dip
-//!   不是一回事，各画各的）；
+//! - 热图下方的线图：下拉框在"实测谷位 `f_dip` vs power"与参数表里的 13 个参数之间切换。
+//!   `f_dip` 排在首位（即默认项）：它是 |S21| 的谷位、与模型无关，选中时另叠两条参考线
+//!   与 Lamb shift 标注；其余各项画该参数逐功率档的拟合值 + stderr；
 //! - 产物是自包含 div，宿主页面需提供 plotly.js（见
 //!   [`s21_plot::PLOTLY_JS_CDN`](crate::superconductor::s21::s21_plot::PLOTLY_JS_CDN)）。
 
@@ -17,10 +17,10 @@ use crate::superconductor::s21::s21::{Complex64, JAC_NAMES, S21Error, S21Model, 
 use crate::superconductor::s21::s21_plot::{PARAM_UNITS, s21_panel_div, unit_of};
 use crate::utils::data::{Column, Datum, Payload, Table, fit_row};
 use crate::utils::panels::{
-    CARD_WIDTH, Card, block, card, DATA_COLOR, FIT_COLOR};
+    CARD_WIDTH, Card, block, card, FIT_COLOR};
 use crate::utils::bubble::{Bubble, bubble};
 use crate::utils::heatmap::{
-    Grid2d, Palette, axis_style, figure_font, heatmap, interactive_config,
+    Grid2d, Palette, View, axis_style, figure_font, heatmap, interactive_config,
 };
 use crate::utils::{argmin, detrend, unwrap_phase};
 use lmfit::ComplexResult;
@@ -88,58 +88,39 @@ pub fn s21_power_plot_div(
         }
     }
 
-    let amp_map = heatmap(
+    // 一张热图、两种看法：首个视图即默认（相位），|S21| 由图名行的下拉框切过去
+    let map = heatmap(
         &Grid2d {
             x: freqs_hz,
             y: &powers,
-            z: &amp,
-            z_err: Some(&amp_err),
+            views: &[
+                View {
+                    name: "phase",
+                    value_title: "phase (rad)",
+                    z: &phase,
+                    z_err: Some(&phase_err),
+                    palette: Palette::RdBu,
+                },
+                View {
+                    name: "|S21|",
+                    value_title: "|S21|",
+                    z: &amp,
+                    z_err: Some(&amp_err),
+                    palette: Palette::Turbo,
+                },
+            ],
             x_title: "freq (Hz)",
             y_title: "power",
-            value_title: "|S21|",
-            caption: "|S21| vs power",
-            palette: Palette::Turbo,
+            value_axis: "power",
         },
-        &format!("{div_id}-amp"),
-    );
-    let phase_map = heatmap(
-        &Grid2d {
-            x: freqs_hz,
-            y: &powers,
-            z: &phase,
-            z_err: Some(&phase_err),
-            x_title: "freq (Hz)",
-            y_title: "power",
-            value_title: "phase (rad)",
-            caption: "phase vs power",
-            palette: Palette::RdBu,
-        },
-        &format!("{div_id}-phase"),
+        &format!("{div_id}-map"),
     );
 
-    // 两张热图下方的一对线图：左边是实测谷位 f_dip（与模型无关）；右边由下拉框选参数
-    // ——画该参数逐功率档的**拟合值 + stderr**（模型给的量，与 f_dip 不是一回事）。
-    let dip_values: Vec<f64> = lines
-        .iter()
-        .map(|line| match dip_frequency(freqs_hz, line.iq) {
-            Some(value) => value,
-            None => f64::NAN,
-        })
-        .collect();
-    let dip_plot = power_line_plot(
-        &powers,
-        &dip_values,
-        &format!("{div_id}-dip"),
-        "f_dip vs power",
-        "f_dip (Hz)",
-        DATA_COLOR,
-        shift_lines(&dip_values).as_ref(),
-    );
+    // 热图下方的线图：一个下拉框在实测谷位 f_dip 与模型的 13 个参数之间切换
     let param_plot = param_line_plot(
         &powers,
-        &param_series(lines),
+        &param_series(freqs_hz, lines),
         &format!("{div_id}-param"),
-        FIT_COLOR,
     );
 
     // 每个功率行的面板（[`s21_fit_plot_div`] 的四面板图 + 参数表，含自身样式）嵌在
@@ -161,31 +142,31 @@ pub fn s21_power_plot_div(
         .collect();
     let bubble_html = bubble(&Bubble {
         div_id,
-        triggers: &[format!("{div_id}-amp-plot"), format!("{div_id}-phase-plot")],
+        triggers: &[format!("{div_id}-map-plot")],
         row_values: &powers,
         labels: &labels,
         panel_width: CARD_WIDTH,
         scale: SCALE,
     });
 
-    // 图组（两张热图 + 下面两张线图）+ 气泡 + 行模板，一起交给卡片
+    // 图组（一张热图 + 下面一张线图）+ 气泡 + 行模板，一起交给卡片
     let style = format!("{STYLE}{}", crate::utils::heatmap::title_bar_style());
     let body = format!(
-        "<div class=\"qtool-power-maps\">{amp_map}{phase_map}\
-         <div class=\"qtool-power-lines\">{dip_plot}{param_plot}</div></div>{bubble_html}{templates}"
+        "<div class=\"qtool-power-maps\">{map}\
+         <div class=\"qtool-power-lines\">{param_plot}</div></div>{bubble_html}{templates}"
     );
-    let report_data = payload(freqs_hz, lines, div_id);
+    let payload = payload(freqs_hz, lines, div_id);
     card(Card {
         class: "qtool-power",
         style: style.as_str(),
         div_id,
         body,
-        payload: Some(&report_data),
+        payload: Some(&payload),
         frame,
     })
 }
 
-/// 报告载荷：逐功率档的原始数据（读出频率轴、复 IQ、IQ 域 σ、模型）各占一张 `row_<i>` 子表；
+/// 报告载荷：逐功率档的原始数据（读出频率轴、复 IQ、IQ 域 σ、模型）各占一张以行号为名的子表；
 /// 逐档的 S21 拟合参数一行进 `fits`（`row` 列指向该档子表，`power` 是它的泵幅）。
 ///
 /// 形参:
@@ -194,9 +175,9 @@ pub fn s21_power_plot_div(
 ///     div_id: 报告名（内蕴数据的 `name`，也是下载文件基名）
 ///
 /// 返回值:
-///     载荷（`fits` 在前，随后逐档一张 `row_<i>`）
+///     载荷（`fits` 在前，随后逐档一张以行号为名的子表）
 fn payload(freqs_hz: &[f64], lines: &[PowerLine<'_>], div_id: &str) -> Payload {
-    let mut report = Payload::new(div_id);
+    let mut payload = Payload::new(div_id);
     let mut fits: Vec<(Vec<Column>, Vec<Datum>)> = Vec::new();
     let mut series: Vec<Table> = Vec::new();
     for (index, line) in lines.iter().enumerate() {
@@ -212,7 +193,7 @@ fn payload(freqs_hz: &[f64], lines: &[PowerLine<'_>], div_id: &str) -> Payload {
             Err(_) => None,
         };
         let mut data = Table::new(
-            &format!("row_{index}"),
+            &format!("{index}"),
             vec![
                 Column::real("freq", "Hz"),
                 Column::complex("iq", "a.u."),
@@ -255,29 +236,14 @@ fn payload(freqs_hz: &[f64], lines: &[PowerLine<'_>], div_id: &str) -> Payload {
             for (_, row) in &fits {
                 table.push(row);
             }
-            report.table(table);
+            payload.table(table);
         }
         None => {}
     }
     for table in series {
-        report.table(table);
+        payload.table(table);
     }
-    report
-}
-
-/// 一张"频率 vs 泵幅"的线图：x 用 log 轴（功率档是 geomspace，等 log 距），
-/// 拟合失败或取不到谷位的档在数据里是 NaN（plotly 视为断点，曲线断开而不是折回去）。
-fn power_line_plot(
-    powers: &[f64],
-    values: &[f64],
-    div_id: &str,
-    title: &str,
-    y_title: &str,
-    color: &'static str,
-    reference: Option<&ShiftLines>,
-) -> String {
-    let plot_html = line_plot_html(div_id, powers, values, None, y_title, color, reference);
-    line_frame(div_id, title, &plot_html, "")
+    payload
 }
 
 /// 实测谷位：|S21| 的最低点，再用相邻三点抛物线求顶点做亚步长校正（把 200 kHz 的网格
@@ -319,32 +285,58 @@ struct ParamSeries {
     label: String,
     value: Vec<f64>,
     stderr: Vec<f64>,
+    /// 该项的颜色：实测量蓝、模型参数红（见 [`DIP_COLOR`]）。
+    color: &'static str,
+    /// 选中这一项时叠在图上的参考线与标注；只有实测谷位 `f_dip` 有。
+    reference: Option<ShiftLines>,
 }
 
-/// 参数表里可画的全部参数（11 个拟合参数 + 2 个派生量，顺序与参数表一致）。
-fn param_series(lines: &[PowerLine<'_>]) -> Vec<ParamSeries> {
-    let mut series: Vec<ParamSeries> = JAC_NAMES
+/// 线图上可画的全部量：实测谷位 `f_dip` 在首位（即下拉框的默认项），其后是参数表里那
+/// 11 个拟合参数 + 2 个派生量，顺序与参数表一致。
+fn param_series(freqs_hz: &[f64], lines: &[PowerLine<'_>]) -> Vec<ParamSeries> {
+    // 实测谷位与模型无关（是 |S21| 的最低点），所以没有 stderr；参考线与 Lamb shift
+    // 标注是它自带的叠加物，切到别的参数时让位
+    let dips: Vec<f64> = lines
         .iter()
-        .copied()
-        .chain(["qi", "kappa_ex"])
-        .map(|name| ParamSeries {
-            name,
-            // 下拉框与 y 轴共用的显示名："fr (Hz)"；量纲为一的不加括号
-            label: match unit_of(name) {
-                "" => name.to_string(),
-                unit => format!("{name} ({})", unit.trim()),
-            },
-            value: Vec::with_capacity(lines.len()),
-            stderr: Vec::with_capacity(lines.len()),
+        .map(|line| match dip_frequency(freqs_hz, line.iq) {
+            Some(value) => value,
+            None => f64::NAN,
         })
         .collect();
+    let mut series: Vec<ParamSeries> = vec![ParamSeries {
+        name: "f_dip",
+        label: "f_dip (Hz)".to_string(),
+        stderr: vec![f64::NAN; lines.len()],
+        color: DIP_COLOR,
+        reference: shift_lines(&dips),
+        value: dips,
+    }];
+    series.extend(
+        JAC_NAMES
+            .iter()
+            .copied()
+            .chain(["qi", "kappa_ex"])
+            .map(|name| ParamSeries {
+                name,
+                // 下拉框与 y 轴共用的显示名："fr (Hz)"；量纲为一的不加括号
+                label: match unit_of(name) {
+                    "" => name.to_string(),
+                    unit => format!("{name} ({})", unit.trim()),
+                },
+                value: Vec::with_capacity(lines.len()),
+                stderr: Vec::with_capacity(lines.len()),
+                color: FIT_COLOR,
+                reference: None,
+            }),
+    );
     for line in lines {
         match line.fit {
             Ok(result) => {
+                // 首项是 f_dip（上面已经填好），模型那 13 项从下标 1 起：
                 // 前 11 个按 `to_array` 的顺序，后 2 个是模型上的派生量
                 let values = result.model.to_array();
                 let derived = [result.model.qi, result.model.kappa_ex];
-                for (index, item) in series.iter_mut().enumerate() {
+                for (index, item) in series.iter_mut().skip(1).enumerate() {
                     item.value.push(match index < values.len() {
                         true => values[index],
                         false => derived[index - values.len()],
@@ -358,9 +350,9 @@ fn param_series(lines: &[PowerLine<'_>]) -> Vec<ParamSeries> {
                     });
                 }
             }
-            // 这一档没有拟合结果：整列留空（该档的面板里已经写了失败原因）
+            // 这一档没有拟合结果：模型那 13 列留空（该档的面板里已经写了失败原因）
             Err(_error) => {
-                for item in series.iter_mut() {
+                for item in series.iter_mut().skip(1) {
                     item.value.push(f64::NAN);
                     item.stderr.push(f64::NAN);
                 }
@@ -370,20 +362,24 @@ fn param_series(lines: &[PowerLine<'_>]) -> Vec<ParamSeries> {
     series
 }
 
-/// "参数 vs power" 线图：value + 拟合 stderr（error bar）+ 上方的参数下拉框。
+/// "参数 vs power" 线图：value + 拟合 stderr（error bar）+ 上方的下拉框；选中项自带参考线
+/// 时（只有 `f_dip`）连参考线与标注一起换。
 ///
-/// 13 条曲线一次全塞进页面，切下拉框只做 `Plotly.restyle`/`relayout`，不再回 Rust。
-fn param_line_plot(
-    powers: &[f64],
-    series: &[ParamSeries],
-    div_id: &str,
-    color: &'static str,
-) -> String {
+/// 14 条曲线一次全塞进页面，切下拉框只做 `Plotly.restyle`/`relayout`，不再回 Rust。
+fn param_line_plot(powers: &[f64], series: &[ParamSeries], div_id: &str) -> String {
     let first = match series.first() {
         Some(item) => item,
         None => return String::new(),
     };
-    let plot_html = line_plot_html(div_id, powers, &first.value, Some(&first.stderr), &first.label, color, None);
+    let plot_html = line_plot_html(
+        div_id,
+        powers,
+        &first.value,
+        Some(&first.stderr),
+        &first.label,
+        first.color,
+        first.reference.as_ref(),
+    );
     let options: Vec<String> = series
         .iter()
         .map(|item| format!("<option value=\"{}\">{}</option>", item.name, item.label))
@@ -397,11 +393,13 @@ fn param_line_plot(
         .iter()
         .map(|item| {
             format!(
-                "\"{}\":{{\"label\":\"{}\",\"value\":{},\"err\":{}}}",
+                "\"{}\":{{\"label\":\"{}\",\"color\":\"{}\",\"value\":{},\"err\":{},\"ref\":{}}}",
                 item.name,
                 item.label,
+                item.color,
                 crate::utils::heatmap::json_array(&item.value),
-                crate::utils::heatmap::json_array(&item.stderr)
+                crate::utils::heatmap::json_array(&item.stderr),
+                reference_json(item.reference.as_ref())
             )
         })
         .collect();
@@ -422,14 +420,27 @@ fn param_line_plot(
     ruler.font = getComputedStyle(select).font;
     select.style.width = Math.ceil(ruler.measureText(picked.text).width + 12) + "px";
   }};
-  fitWidth();
+  var apply = function (item) {{
+    // 颜色跟着换：实测量（f_dip）蓝、模型参数红，其余各项与曲线同色
+    Plotly.restyle(gd, {{
+      "y": [item.value],
+      "line.color": [item.color],
+      "marker.color": [item.color],
+      "error_y.array": [item.err],
+      "error_y.color": [item.color],
+      "error_y.visible": [true]
+    }}, [0]);
+    // y 轴标题与参考线一起换：只有 f_dip 那一项带参考线，其余各项都是空数组，等于抹掉
+    Plotly.relayout(gd, {{ "yaxis.title.text": item.label, "shapes": item.ref.shapes, "annotations": item.ref.annotations }});
+    fitWidth();
+  }};
   select.onchange = function () {{
     var item = SERIES[select.value];
     if (!item) {{ return; }}
-    Plotly.restyle(gd, {{ "y": [item.value], "error_y.array": [item.err], "error_y.visible": [true] }}, [0]);
-    Plotly.relayout(gd, {{ "yaxis.title.text": item.label }});
-    fitWidth();
+    apply(item);
   }};
+  // 加载时也走 apply：初始状态与切换后的状态由同一段代码决定，不给"首次"开特例
+  apply(SERIES[select.value]);
 }})();
 </script>"#,
         data.join(",")
@@ -487,44 +498,9 @@ fn line_plot_html(
         ))
         .y_axis(axis_style(Axis::new().title(y_title)));
     match reference {
-        Some(lines) => {
-            // 最低/最高功率的谷位各画一条浅灰虚线（画在数据下面），差值标在两条线中间
-            let mut shapes: Vec<Shape> = Vec::with_capacity(2);
-            for level in [lines.low, lines.high] {
-                shapes.push(
-                    Shape::new()
-                        .shape_type(ShapeType::Line)
-                        .layer(ShapeLayer::Below)
-                        .x_ref("paper")
-                        .x0(0.0)
-                        .x1(1.0)
-                        .y_ref("y")
-                        .y0(level)
-                        .y1(level)
-                        .line(
-                            ShapeLine::new()
-                                .color(SHIFT_LINE_COLOR)
-                                .width(1.0)
-                                .dash(DashType::Dash),
-                        ),
-                );
-            }
-            layout = layout.shapes(shapes).annotations(vec![
-                Annotation::new()
-                    .text(lines.label.clone())
-                    .x(0.99)
-                    .y((lines.low + lines.high) / 2.0)
-                    .x_ref("paper")
-                    .y_ref("y")
-                    .x_anchor(Anchor::Right)
-                    .y_anchor(Anchor::Middle)
-                    .show_arrow(false)
-                    .font(
-                        plotly::common::Font::new()
-                            .size(SHIFT_TEXT_SIZE)
-                            .color(SHIFT_TEXT_COLOR),
-                    ),
-            ]);
+        Some(reference) => {
+            let (shapes, annotations) = reference_layout(reference);
+            layout = layout.shapes(shapes).annotations(annotations);
         }
         None => {}
     }
@@ -552,6 +528,10 @@ const LOG_TICK_STEP: f64 = std::f64::consts::LOG10_2;
 /// 线图的上边距，px：图名在 HTML 图名行里、图内也没有顶部轴，plotly 默认的 100px 全是空白，
 /// 压到"图名下面一点"即可。自带工具栏（modebar）不占这里 —— 它在 CSS 里被挪到图名行右端。
 const LINE_PLOT_TOP: usize = 10;
+
+/// 实测谷位 `f_dip` 的颜色：它是从 |S21| 量出来的、不是模型给的，用蓝与模型的参数
+/// （[`FIT_COLOR`]，红）区分开——同一张图上换个下拉项就换了颜色，一眼看得出换的是哪一类量。
+const DIP_COLOR: &str = "royalblue";
 
 /// f_dip 参考线（最低/最高功率的谷位）与 Lamb shift 标注的样式。
 const SHIFT_LINE_COLOR: &str = "#cbd5e1";
@@ -592,6 +572,66 @@ fn shift_label(delta_hz: f64) -> String {
         true => format!("Lamb shift {:.3} MHz", magnitude / 1.0e6),
         false => format!("Lamb shift {:.1} kHz", magnitude / 1.0e3),
     }
+}
+
+/// 参考线与标注本身：最低/最高功率的谷位各画一条浅灰虚线（画在数据下面），差值标在两条线
+/// 中间。发图用的 layout 与切视图时脚本的 `relayout` 共用同一份。
+fn reference_layout(reference: &ShiftLines) -> (Vec<Shape>, Vec<Annotation>) {
+    let mut shapes: Vec<Shape> = Vec::with_capacity(2);
+    for level in [reference.low, reference.high] {
+        shapes.push(
+            Shape::new()
+                .shape_type(ShapeType::Line)
+                .layer(ShapeLayer::Below)
+                .x_ref("paper")
+                .x0(0.0)
+                .x1(1.0)
+                .y_ref("y")
+                .y0(level)
+                .y1(level)
+                .line(
+                    ShapeLine::new()
+                        .color(SHIFT_LINE_COLOR)
+                        .width(1.0)
+                        .dash(DashType::Dash),
+                ),
+        );
+    }
+    let annotations = vec![
+        Annotation::new()
+            .text(reference.label.clone())
+            .x(0.99)
+            .y((reference.low + reference.high) / 2.0)
+            .x_ref("paper")
+            .y_ref("y")
+            .x_anchor(Anchor::Right)
+            .y_anchor(Anchor::Middle)
+            .show_arrow(false)
+            .font(
+                plotly::common::Font::new()
+                    .size(SHIFT_TEXT_SIZE)
+                    .color(SHIFT_TEXT_COLOR),
+            ),
+    ];
+    (shapes, annotations)
+}
+
+/// [`reference_layout`] 的 JSON：脚本切视图时拿它 `relayout`。没有参考线时给空数组，
+/// 序列化失败同样给空数组——页面上少两条参考线，而不是整张图跟着崩掉。
+fn reference_json(reference: Option<&ShiftLines>) -> String {
+    let (shapes, annotations) = match reference {
+        Some(reference) => reference_layout(reference),
+        None => (Vec::new(), Vec::new()),
+    };
+    let shapes = match serde_json::to_string(&shapes) {
+        Ok(json) => json,
+        Err(_invalid) => String::from("[]"),
+    };
+    let annotations = match serde_json::to_string(&annotations) {
+        Ok(json) => json,
+        Err(_invalid) => String::from("[]"),
+    };
+    format!("{{\"shapes\":{shapes},\"annotations\":{annotations}}}")
 }
 
 const STYLE: &str = r#"<style>

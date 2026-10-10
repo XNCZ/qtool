@@ -160,7 +160,7 @@ pub fn iq_plot_div(iqs: &[Vec<Complex64>], div_id: &str, frame: Option<&str>) ->
     })
 }
 
-/// 报告载荷：每态的单发 IQ **全量**各占一张 `row_<i>` 子表（i 即态编号）；中心、逐级密度
+/// 报告载荷：每态的单发 IQ **全量**各占一张以行号为名的子表（i 即态编号）；中心、逐级密度
 /// 区域的面积与半径、每对态的判别统计各一张汇总表。
 ///
 /// 这张报告没有拟合：中心、面积、阈值的算法都在 [`crate::superconductor::iq`]，载荷给的是
@@ -172,7 +172,7 @@ pub fn iq_plot_div(iqs: &[Vec<Complex64>], div_id: &str, frame: Option<&str>) ->
 ///     div_id: 报告名（内蕴数据的 `name`，也是下载文件基名）
 ///
 /// 返回值:
-///     载荷（`states`、`density`、`pairs` 在前，随后逐态一张 `row_<i>`）
+///     载荷（`states`、`density`、`pairs` 在前，随后逐态一张以行号为名的子表）
 fn payload(iqs: &[Vec<Complex64>], stats: &IqStats, div_id: &str) -> Payload {
     let mut report = Payload::new(div_id);
     let mut states = Table::new(
@@ -234,7 +234,7 @@ fn payload(iqs: &[Vec<Complex64>], stats: &IqStats, div_id: &str) -> Payload {
     report.table(density);
     report.table(pairs);
     for (index, cloud) in iqs.iter().enumerate() {
-        let mut table = Table::new(&format!("row_{index}"), vec![Column::complex("iq", "a.u.")]);
+        let mut table = Table::new(&format!("{index}"), vec![Column::complex("iq", "a.u.")]);
         for shot in cloud {
             table.push(&[Datum::Complex(shot.re, shot.im)]);
         }

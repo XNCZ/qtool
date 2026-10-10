@@ -234,7 +234,7 @@ pub fn qspec_z_plot_div(
     })
 }
 
-/// 报告载荷：逐 Z 偏置的原始数据（该行的频率轴、复 IQ、P1、模型）各占一张 `row_<i>` 子表；
+/// 报告载荷：逐 Z 偏置的原始数据（该行的频率轴、复 IQ、P1、模型）各占一张以行号为名的子表；
 /// 逐行的洛伦兹拟合一行进 `fits`（`row` 列指向该行子表，`z` 是该行的偏置）；通量调谐的拟合
 /// 结果单占一张 `flux` 表；标定中心进 `states`。
 ///
@@ -249,7 +249,7 @@ pub fn qspec_z_plot_div(
 ///     div_id: 报告名（内蕴数据的 `name`，也是下载文件基名）
 ///
 /// 返回值:
-///     载荷（`fits` 在前，随后 `flux`、`states`、逐行一张 `row_<i>`）
+///     载荷（`fits` 在前，随后 `flux`、`states`、逐行一张以行号为名的子表）
 fn payload(
     freqs_hz: &[f64],
     lines: &[QspecZLine<'_>],
@@ -274,7 +274,7 @@ fn payload(
             Err(_) => None,
         };
         let mut data = Table::new(
-            &format!("row_{index}"),
+            &format!("{index}"),
             vec![
                 Column::real("freq", "Hz"),
                 Column::complex("iq", "a.u."),

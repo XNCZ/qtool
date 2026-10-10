@@ -420,7 +420,7 @@ pub fn drag_amplitude_plot_div(
     })
 }
 
-/// 报告载荷：逐阶原始数据（幅度轴、复 IQ、P1、模型）各占一张 `row_<i>` 子表；谷拟合逐阶一行
+/// 报告载荷：逐阶原始数据（幅度轴、复 IQ、P1、模型）各占一张以行号为名的子表；谷拟合逐阶一行
 /// 进 `fits`（`row` 列指向该阶子表，`pairs` 是它的阶数）；报告级标量（π 幅度与它的标准误、
 /// 标定值）进 `params`。
 ///
@@ -433,7 +433,7 @@ pub fn drag_amplitude_plot_div(
 ///     div_id: 报告名（内蕴数据的 `name`，也是下载文件基名）
 ///
 /// 返回值:
-///     载荷（逐阶一张 `row_<i>`，随后 `fits` 与 `params`）
+///     载荷（逐阶一张以行号为名的子表，随后 `fits` 与 `params`）
 fn payload(layers: &[Layer<'_>], chosen: f64, div_id: &str) -> Payload {
     let mut payload = Payload::new(div_id);
     let mut fits: Vec<(Vec<Column>, Vec<Datum>)> = Vec::new();
@@ -448,7 +448,7 @@ fn payload(layers: &[Layer<'_>], chosen: f64, div_id: &str) -> Payload {
             None => None,
         };
         let mut data = Table::new(
-            &format!("row_{index}"),
+            &format!("{index}"),
             vec![
                 Column::real("amp", "1"),
                 Column::complex("iq", "a.u."),
