@@ -1,6 +1,6 @@
 [package]
 name = "qtool"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 authors = ["xncz <xncz@outlook.com>"]
 description = "Analysis toolbox for quantum computation: superconducting-qubit calibration fits with interactive plotly reports, plus quantum process tomography (QPT)."

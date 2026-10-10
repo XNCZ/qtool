@@ -28,7 +28,7 @@ output, §5 records what was run where, §6 collects the gotchas.
 ## 1. What the payload holds
 
 ```json
-{ "version": "0.2.3", "timestamp": {"utc": "...", "local": "..."}, "name": "t1-0",
+{ "version": "0.3.0", "timestamp": {"utc": "...", "local": "..."}, "name": "t1-0",
   "tables": [ { "name": "data",
                 "columns": [ {"key": "tau", "unit": "s", "kind": "real"},
                              {"key": "iq",  "unit": "a.u.", "kind": "complex"} ],
@@ -120,7 +120,7 @@ types travel in the IPC metadata). Three details:
 csv/txt start with a 4-line preamble:
 
 ```
-# qtool 0.2.3 | 2026-10-09T22:18:56+08:00 | t1-0
+# qtool 0.3.0 | 2026-10-09T22:18:56+08:00 | t1-0
 # complex columns: data.iq, states.center  (literal <re><sign><im>j; pandas: converters={<col>: complex})
 # ---- data ----
 # columns: tau [s], iq [a.u.], iq_sigma [a.u.], p1 [1], p1_sigma [1], model [1]

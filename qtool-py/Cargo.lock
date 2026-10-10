@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "qtool"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "contour",
@@ -1727,7 +1727,7 @@ dependencies = [
 
 [[package]]
 name = "qtool_py"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "lmfit",
  "numpy",
