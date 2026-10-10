@@ -90,6 +90,11 @@ jobs:
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           skip-existing: true
+      # cargo publish 只接受干净的树，而上面两步把工作区弄脏了：download-artifact 下下来的
+      # dist/*.whl 与 pypa action 生成的 .github/.tmp/。两样都用完了（PyPI 那边已发），清掉
+      # 再发 crate。不清就得加 --allow-dirty——那会把四个平台的 wheel（约 7 MB）一并打进
+      # crate，每个 cargo install 的人都白下。
+      - run: git clean -ffdx
       # 与上面共用同一个 job/if，不再各判一次。
       # cargo publish 没有 skip-existing 的等价物：给已发布版本补 wheel 的
       # workflow_dispatch 重跑会在这里红一次（PyPI 那步已 skip-existing 通过），
